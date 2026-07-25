@@ -127,39 +127,48 @@ body.tab-compose .topbar{display:none;}
 
 /* ── 스텝 입력(스크롤 모드 탭 → 듣고 → 확정) ───────────────────────── */
 /* 탭한 칸이 0.5초간 빨갛게 번쩍이는 오버레이 (캔버스 재그리기 없이 DOM으로) */
-/* 하단 가운데에 일시적으로 떠 있는 버튼들 — 별도 박스/패널 없음 */
-.step-fabs{position:fixed;left:0;right:0;bottom:104px;z-index:190;display:none;
-  flex-direction:column;align-items:center;gap:7px;pointer-events:none;}
-.step-fabs.on{display:flex;}
-.step-fab-name{font-size:14px;font-weight:800;color:#fff;letter-spacing:0.02em;
-  text-shadow:0 1px 5px rgba(0,0,0,0.95),0 0 12px rgba(0,0,0,0.8);}
-.step-fab-row{display:flex;gap:14px;align-items:center;pointer-events:auto;}
-/* 반음 보정 — 인식이 반음/옥타브 틀렸을 때 다시 부르지 않고 고친다 */
-.step-nudge{display:flex;flex-direction:column;gap:5px;}
-.step-nudge-btn{width:40px;height:26px;border-radius:8px;border:none;font-family:inherit;
-  font-size:11px;font-weight:800;color:#fff;background:rgba(58,58,58,0.94);cursor:pointer;
-  box-shadow:0 2px 8px rgba(0,0,0,0.5);}
-.step-nudge-btn:active{opacity:0.6;}
-/* 마이크 대기 안내 */
-.step-hint{position:fixed;left:50%;transform:translateX(-50%);bottom:112px;z-index:189;
-  display:none;font-size:12px;font-weight:700;color:#fff;white-space:nowrap;
-  text-shadow:0 1px 5px rgba(0,0,0,0.95),0 0 12px rgba(0,0,0,0.85);
-  animation:stepHintPulse 1.6s ease-in-out infinite;}
-.step-hint.on{display:block;}
-@keyframes stepHintPulse{0%,100%{opacity:0.55;}50%{opacity:1;}}
-.step-fab{width:54px;height:54px;border-radius:50%;border:none;font-family:inherit;
-  font-size:23px;font-weight:800;color:#fff;cursor:pointer;
-  box-shadow:0 4px 16px rgba(0,0,0,0.6);transition:transform 0.1s;}
+/* 음높이 측정기(튜너) — 마이크가 켜져 있는 동안 계속 표시 */
+.step-tuner{position:fixed;left:10px;right:10px;bottom:118px;z-index:190;display:none;
+  align-items:center;gap:12px;padding:10px 12px;border-radius:16px;
+  background:rgba(14,14,14,0.93);border:1px solid var(--brd);backdrop-filter:blur(8px);
+  box-shadow:0 6px 22px rgba(0,0,0,0.6);}
+.step-tuner.on{display:flex;}
+.step-tuner-read{flex:1;min-width:0;}
+.step-tuner-note{font-size:30px;font-weight:800;color:#fff;line-height:1.05;}
+.step-tuner.hit .step-tuner-note{color:#4ade80;}
+.step-tuner-cents{font-size:10.5px;font-weight:600;color:var(--txt2);margin-top:1px;white-space:nowrap;}
+/* 음정 편차 바: 가운데가 정확, 좌우로 벗어나면 바늘이 밀린다 */
+.step-tuner-bar{position:relative;height:4px;margin-top:7px;border-radius:2px;
+  background:linear-gradient(90deg,#333 0%,#333 46%,#4ade80 46%,#4ade80 54%,#333 54%,#333 100%);}
+.step-tuner-needle{position:absolute;top:-3px;left:50%;width:3px;height:10px;border-radius:2px;
+  background:#fff;transform:translateX(-50%);transition:left 0.08s linear;
+  box-shadow:0 0 5px rgba(255,255,255,0.7);}
+.step-tuner-btns{display:flex;gap:10px;flex-shrink:0;}
+.step-fab{width:50px;height:50px;border-radius:50%;border:none;font-family:inherit;
+  font-size:21px;font-weight:800;color:#fff;cursor:pointer;
+  box-shadow:0 3px 12px rgba(0,0,0,0.55);transition:transform 0.1s;}
 .step-fab.ok{background:#1f8a4c;}
-.step-fab.no{background:rgba(58,58,58,0.94);}
+.step-fab.no{background:rgba(58,58,58,0.94);font-size:19px;}
 .step-fab:active{transform:scale(0.9);}
+.step-fab[disabled]{opacity:0.32;pointer-events:none;}
 
-/* 저장된 음이 있을 때만 뜨는 박자 맞추기 알약 */
-.step-go-pill{position:fixed;left:50%;transform:translateX(-50%);bottom:112px;z-index:190;
-  display:none;border:none;border-radius:17px;padding:8px 15px;background:#E9001E;color:#fff;
-  font-family:inherit;font-size:11.5px;font-weight:800;letter-spacing:0.02em;cursor:pointer;
-  box-shadow:0 4px 16px rgba(0,0,0,0.6);}
-.step-go-pill.on{display:block;}
+/* 시간 순으로 쌓인 음높이 스트립 */
+.step-strip{position:fixed;left:10px;right:10px;bottom:66px;z-index:190;display:none;
+  align-items:center;gap:8px;padding:7px 9px;border-radius:14px;
+  background:rgba(14,14,14,0.93);border:1px solid var(--brd);backdrop-filter:blur(8px);
+  box-shadow:0 6px 22px rgba(0,0,0,0.6);}
+.step-strip.on{display:flex;}
+.step-strip-list{flex:1;min-width:0;display:flex;gap:5px;overflow-x:auto;padding:1px 0;scrollbar-width:none;}
+.step-strip-list::-webkit-scrollbar{display:none;}
+.step-strip-empty{font-size:10.5px;font-weight:600;color:var(--txt3);white-space:nowrap;padding:6px 2px;}
+.step-chip{flex:0 0 auto;min-width:34px;height:30px;padding:0 8px;border:none;border-radius:9px;
+  background:rgba(233,0,30,0.22);box-shadow:0 0 0 1px rgba(233,0,30,0.55) inset;
+  color:#fff;font-family:inherit;font-size:12px;font-weight:800;cursor:pointer;}
+.step-chip:active{background:rgba(233,0,30,0.5);}
+.step-chip-oct{font-size:8.5px;font-weight:600;opacity:0.65;margin-left:1px;}
+.step-go-pill{flex-shrink:0;border:none;border-radius:11px;padding:8px 12px;background:#E9001E;color:#fff;
+  font-family:inherit;font-size:11px;font-weight:800;letter-spacing:0.02em;cursor:pointer;}
+.step-go-pill[disabled]{opacity:0.3;pointer-events:none;}
 .step-go-pill:active{opacity:0.75;}
 
 .step-tap{position:fixed;inset:0;z-index:200;display:none;flex-direction:column;
@@ -1362,20 +1371,23 @@ body.tab-compose .page.compose .ctrl-bar .layer-step{justify-content:center;widt
   </button>
 </div>
 
-      <!-- 확정 버튼: 하단 가운데에 일시적으로만 떠 있다 (패널 없음) -->
-      <div class="step-fabs" id="stepFabs">
-        <div class="step-fab-name" id="stepFabName">—</div>
-        <div class="step-fab-row">
-          <button class="step-fab no" id="stepNo" aria-label="취소">✕</button>
-          <div class="step-nudge">
-            <button class="step-nudge-btn" id="stepUp" aria-label="반음 위">▲</button>
-            <button class="step-nudge-btn" id="stepDown" aria-label="반음 아래">▼</button>
-          </div>
+      <!-- 음높이 측정기: 마이크가 켜져 있는 동안 계속 살아 있는 실시간 표시 -->
+      <div class="step-tuner" id="stepTuner">
+        <div class="step-tuner-read">
+          <div class="step-tuner-note" id="stepTunerNote">—</div>
+          <div class="step-tuner-cents" id="stepTunerCents">불러보세요</div>
+          <div class="step-tuner-bar"><div class="step-tuner-needle" id="stepTunerNeedle"></div></div>
+        </div>
+        <div class="step-tuner-btns">
+          <button class="step-fab no" id="stepNo" aria-label="마지막 취소">↶</button>
           <button class="step-fab ok" id="stepOk" aria-label="이 음 저장">✓</button>
         </div>
       </div>
-      <div class="step-hint" id="stepHint">🎤 한 음씩 불러보세요</div>
-      <button class="step-go-pill" id="stepGo">박자 맞추기</button>
+      <!-- 시간 순으로 쌓인 음높이 목록 (칩을 누르면 그 음만 삭제) -->
+      <div class="step-strip" id="stepStrip">
+        <div class="step-strip-list" id="stepStripList"></div>
+        <button class="step-go-pill" id="stepGo">박자 맞추기</button>
+      </div>
 
       <!-- 박자 맞추기: 메트로놈 들으며 탭 → 탭 간격이 각 음의 길이가 된다 -->
       <div class="step-tap" id="stepTap">
@@ -4347,11 +4359,12 @@ class App {
       stepCollectBtn: document.getElementById('stepCollectBtn'),
       stepCollectIco: document.getElementById('stepCollectIco'),
       stepCollectLbl: document.getElementById('stepCollectLbl'),
-      stepFabs: document.getElementById('stepFabs'),
-      stepFabName: document.getElementById('stepFabName'),
-      stepUp: document.getElementById('stepUp'),
-      stepDown: document.getElementById('stepDown'),
-      stepHint: document.getElementById('stepHint'),
+      stepTuner: document.getElementById('stepTuner'),
+      stepTunerNote: document.getElementById('stepTunerNote'),
+      stepTunerCents: document.getElementById('stepTunerCents'),
+      stepTunerNeedle: document.getElementById('stepTunerNeedle'),
+      stepStrip: document.getElementById('stepStrip'),
+      stepStripList: document.getElementById('stepStripList'),
       stepOk: document.getElementById('stepOk'),
       stepNo: document.getElementById('stepNo'),
       stepGo: document.getElementById('stepGo'),
@@ -8514,25 +8527,24 @@ class App {
   }
 
   // ══════════════════════════════════════════════════════════
-  //  스텝 입력: 마이크를 켜두고 한 음씩 부르면 → 자동 검출 + 그 음을 들려줌 → ✓로 쌓고,
-  //  마지막에 메트로놈에 맞춰 탭하면 그 간격이 각 음의 길이가 된다.
+  //  스텝 입력(음높이 측정기 방식): 마이크를 켜두면 튜너처럼 현재 음높이를 계속 표시하고,
+  //  피아노로 그 음을 따라 울려준다. ✓를 누른 순간의 음높이만 시간 순으로 쌓이며,
+  //  쌓인 목록은 하단 스트립에 보인다. 마지막에 박자 맞추기로 길이를 입힌다.
   // ══════════════════════════════════════════════════════════
   #stepInit() {
-    this.stepPend = null;   // 확정 대기 중인 음 { midi }
-    this.stepQueue = [];    // 확정된 음정 순서 [{ row, midi }]
+    this.stepQueue = [];    // 확정된 음높이 [{ row, midi }] — 시간 순
     this.stepTapSt = null;  // 박자 맞추기 진행 상태
-    this.stepMic = null;    // 음성 인식 상태
+    this.stepMic = null;    // 측정기 상태
 
     this.dom.stepCollectBtn?.addEventListener('click', () => this.#stepMicToggle());
-    this.#stepRenderCollect();
-    this.dom.stepOk?.addEventListener('click', () => this.#stepConfirm());
-    this.dom.stepNo?.addEventListener('click', () => this.#stepReject());
-    this.dom.stepUp?.addEventListener('click', () => this.#stepNudge(1));
-    this.dom.stepDown?.addEventListener('click', () => this.#stepNudge(-1));
+    this.dom.stepOk?.addEventListener('click', () => this.#stepCapture());
+    this.dom.stepNo?.addEventListener('click', () => this.#stepUndo());
     this.dom.stepGo?.addEventListener('click', () => this.#stepTapStart());
     this.dom.stepTapPad?.addEventListener('click', () => this.#stepTapHit());
     this.dom.stepTapDone?.addEventListener('click', () => this.#stepTapFinish());
     this.dom.stepTapCancel?.addEventListener('click', () => this.#stepTapClose(true));
+    this.#stepRenderCollect();
+    this.#stepRenderStrip();
   }
 
   #stepRenderCollect() {
@@ -8542,14 +8554,20 @@ class App {
       this.dom.stepCollectLbl.style.color = on ? 'var(--acc)' : '';
       this.dom.stepCollectLbl.textContent = on ? '듣는 중' : 'MELODY';
     }
+    this.dom.stepTuner?.classList.toggle('on', on && !this.stepTapSt);
   }
 
   #stepNoteName(midi) {
     const n = NOTE_NAMES[((midi % 12) + 12) % 12];
     return n + (Math.floor(midi / 12) - 1);
   }
+  // 하단 스트립·튜너에는 도레미로 (앱 전체가 쓰는 PITCH_LABELS_KO 재사용)
+  #stepNoteKo(midi) {
+    return PITCH_LABELS_KO[((midi % 12) + 12) % 12];
+  }
+  #stepOct(midi) { return Math.floor(midi / 12) - 1; }
 
-  // ── 음성 음정 인식 (마이크 상시 대기) ──
+  // ── 마이크 on/off ──
   async #stepMicToggle() {
     if (this.stepMic) { this.#stepMicStop(); return; }
     this.audio.init();
@@ -8576,14 +8594,17 @@ class App {
     this.stepMic = {
       stream, src, an,
       buf: new Float32Array(an.fftSize),
-      hist: [],          // 최근 프레임의 midi (안정성 판정)
-      armed: true,       // 다음 음을 받을 준비 (한 번 검출하면 조용해질 때까지 잠금)
-      quiet: 0,          // 연속 무음 프레임 수
-      muteUntil: 0,      // 확인용 발음이 마이크로 되들어오는 것 차단 (performance.now 기준 ms)
+      hist: [],        // 최근 프레임의 midi(소수) — 중앙값 평활용
+      live: null,      // 지금 측정된 음높이(소수 midi). 화면과 ✓가 이 값을 쓴다
+      quiet: 0,        // 연속 무음 프레임 수
+      floor: null,     // 잡음 바닥(적응형 게이트용)
+      lastTone: 0,     // 따라 울려준 시각
+      lastToneMidi: null,
     };
     this.stepMic.timer = setInterval(() => this.#stepMicTick(), 40);
     this.#stepRenderCollect();
-    this.#stepRenderUi();
+    this.#stepRenderTuner();
+    this.#stepRenderStrip();
   }
 
   #stepMicStop() {
@@ -8594,8 +8615,10 @@ class App {
     try { m.stream.getTracks().forEach(t => t.stop()); } catch (_) {}
     this.stepMic = null;
     this.#stepRenderCollect();
+    this.#stepRenderTuner();
   }
 
+  // ── 측정 루프: 튜너처럼 '계속' 돈다. 한 번 잡고 멈추지 않는다 ──
   #stepMicTick() {
     const m = this.stepMic;
     if (!m || this.stepTapSt) return;
@@ -8607,23 +8630,20 @@ class App {
     for (let i = 0; i < m.buf.length; i++) sum += m.buf[i] * m.buf[i];
     const rms = Math.sqrt(sum / m.buf.length);
 
-    // 잡음 바닥을 계속 추적해 게이트를 환경에 맞춘다.
-    // (고정값으로 두면 조용한 폰에서는 아무것도 안 잡히고, 시끄러운 곳에서는 헛검출된다)
+    // 잡음 바닥을 추적해 게이트를 환경에 맞춘다(조용한 폰/시끄러운 방 모두 대응)
     if (m.floor == null) m.floor = rms;
     else m.floor = (rms < m.floor) ? (m.floor * 0.7 + rms * 0.3) : (m.floor * 0.995 + rms * 0.005);
-    const gate = Math.max(0.003, m.floor * 4);   // 절대 하한을 낮게 — 조용한 폰 마이크 대응
+    const gate = Math.max(0.003, m.floor * 4);
 
     if (rms < gate) {
       m.quiet++;
-      if (m.quiet >= 2) { m.hist.length = 0; m.armed = true; }   // 조용해지면 다음 음 받을 준비
-      if (!this.stepPend) this.#stepRenderListen(null);
+      // 멈추면 마지막으로 잡힌 음을 그대로 '유지'한다 → 그 상태에서 ✓를 누르면 저장된다.
+      // 한참 조용하면 표시를 비운다.
+      if (m.quiet > 25) { m.live = null; m.hist.length = 0; this.#stepRenderTuner(); }
       return;
     }
     m.quiet = 0;
-    if (!m.armed || this.stepPend) return;
-    if (performance.now() < m.muteUntil) return;
 
-    // MPM(명료도) + YIN 융합 — 기존 인식기와 같은 방식
     const sr = ctx.sampleRate;
     const mp = detectPitchMPM(m.buf, sr);
     const fy = detectPitchYIN(m.buf, sr);
@@ -8634,115 +8654,124 @@ class App {
     } else {
       hz = mp.freq > 0 ? mp.freq : fy;
     }
-    if (!(hz > 0)) return;                    // 한 프레임 실패로 기록을 버리지 않는다
+    if (!(hz > 0)) return;
 
-    const midi = 69 + 12 * Math.log2(hz / 440);   // 반음 미만 정보를 살려 중앙값 계산에 쓴다
+    const midi = 69 + 12 * Math.log2(hz / 440);
     if (midi < 21 || midi > 108) return;
 
+    // 중앙값 평활 — 순간적으로 튀는 값(옥타브 점프 등)을 흡수
     m.hist.push(midi);
-    if (m.hist.length > 6) m.hist.shift();
-    this.#stepRenderListen(Math.round(midi));
-    if (m.hist.length < 4) return;
+    if (m.hist.length > 5) m.hist.shift();
+    const w = m.hist.slice().sort((a, b) => a - b);
+    m.live = w[w.length >> 1];
 
-    // 최근 4프레임(≈160ms)이 ±1반음 안에 모여 있으면 확정하고 '중앙값'을 쓴다.
-    // 이전에는 4프레임이 완전히 똑같아야 했는데, 사람 목소리는 음 시작에서 반음씩
-    // 흔들리기 때문에 그 조건이 거의 성립하지 않아 아무것도 잡히지 않았다.
-    const w = m.hist.slice(-4).sort((a, b) => a - b);
-    if (w[3] - w[0] > 1.5) return;
-    m.armed = false;
-    m.hist.length = 0;
-    this.#stepDetected(Math.round((w[1] + w[2]) / 2));
+    this.#stepRenderTuner();
+    this.#stepFollowTone(Math.round(m.live));
   }
 
-  // 듣는 중 실시간 표시 — 마이크가 소리를 잡고 있는지 눈으로 확인할 수 있게
-  #stepRenderListen(midi) {
-    const hint = this.dom.stepHint;
-    if (!hint) return;
-    hint.textContent = (midi == null)
-      ? '🎤 한 음씩 불러보세요'
-      : '🎤 ' + this.#stepNoteName(midi) + ' … 조금 더 길게';
-  }
-
-  // 검출 → 바로 그 음을 들려주고 ✓/✕ 를 띄운다
-  #stepDetected(midi) {
-    this.stepPend = { midi };
-    this.#stepPlayPend();
-    this.#stepRenderUi();
-  }
-
-  #stepPlayPend() {
-    if (!this.stepPend) return;
-    this.audio.triggerNow({
-      instrument: this.store.currentInstrument,
-      midi: this.stepPend.midi, duration: 0.8, velocity: 0.9,
-    });
-    // 스피커 소리가 마이크로 되들어와 재검출되는 것 차단
-    if (this.stepMic) this.stepMic.muteUntil = performance.now() + 900;
-  }
-
-  // 반음 보정 — 음정 인식의 대표 오류(반음/옥타브)를 다시 부르지 않고 고친다
-  #stepNudge(semi) {
-    if (!this.stepPend) return;
-    const midi = Math.max(21, Math.min(108, this.stepPend.midi + semi));
-    if (midi === this.stepPend.midi) return;
-    this.stepPend.midi = midi;
-    this.#stepPlayPend();
-    this.#stepRenderUi();
-  }
-
-  #stepConfirm() {
-
-    if (!this.stepPend) return;
-    this.stepQueue.push({ row: midiToRow(this.stepPend.midi), midi: this.stepPend.midi });
-    this.stepPend = null;
-    this.#stepArmMic();
-    this.#stepRenderUi();
-  }
-
-  #stepReject() {
-    if (!this.stepPend) return;
-    this.stepPend = null;
-    this.#stepArmMic();
-    this.#stepRenderUi();
-  }
-
-  // ✓/✕ 직후 바로 다음 음을 받을 수 있게 (조용해질 때까지 기다리지 않아도 되도록)
-  #stepArmMic() {
+  // 측정된 음을 피아노로 따라 울려준다 (반음이 바뀔 때만, 낮은 세기로)
+  #stepFollowTone(midi) {
     const m = this.stepMic;
     if (!m) return;
-    m.hist.length = 0;
-    m.armed = true;
-    m.quiet = 0;
-    m.muteUntil = 0;   // 확인음 차단 해제 — ✓ 누른 직후 바로 다음 음을 부를 수 있게
+    const now = performance.now();
+    if (midi === m.lastToneMidi && now - m.lastTone < 700) return;
+    if (now - m.lastTone < 140) return;
+    m.lastTone = now;
+    m.lastToneMidi = midi;
+    // 스피커 소리가 마이크로 되들어와도 목소리에 묻히도록 세기를 낮춘다
+    this.audio.triggerNow({
+      instrument: this.store.currentInstrument, midi, duration: 0.4, velocity: 0.5,
+    });
   }
 
-  #stepRenderUi() {
+  #stepRenderTuner() {
+    const m = this.stepMic;
+    const noteEl = this.dom.stepTunerNote, centEl = this.dom.stepTunerCents;
+    const needle = this.dom.stepTunerNeedle, panel = this.dom.stepTuner;
+    if (!panel) return;
+    panel.classList.toggle('on', !!m && !this.stepTapSt);
+    if (this.dom.stepOk) this.dom.stepOk.disabled = !(m && m.live != null);
+    if (!m || m.live == null) {
+      if (noteEl) noteEl.textContent = '—';
+      if (centEl) centEl.textContent = '불러보세요';
+      if (needle) needle.style.left = '50%';
+      panel.classList.remove('hit');
+      return;
+    }
+    const rounded = Math.round(m.live);
+    const cents = Math.round((m.live - rounded) * 100);
+    if (noteEl) noteEl.textContent = this.#stepNoteKo(rounded) + this.#stepOct(rounded);
+    if (centEl) {
+      centEl.textContent = this.#stepNoteName(rounded)
+        + '  ' + (cents > 0 ? '+' : '') + cents + ' cent';
+    }
+    // ±50 cent → 바 전체 폭에 대응
+    if (needle) needle.style.left = Math.max(2, Math.min(98, 50 + cents)) + '%';
+    panel.classList.toggle('hit', Math.abs(cents) <= 15);
+  }
+
+  // ✓ : 지금 표시된 음높이를 목록에 추가 (측정은 계속된다)
+  #stepCapture() {
+    const m = this.stepMic;
+    if (!m || m.live == null) return;
+    const midi = Math.round(m.live);
+    this.stepQueue.push({ row: midiToRow(midi), midi });
+    try { if (navigator.vibrate) navigator.vibrate(14); } catch (_) {}
+    this.#stepRenderStrip();
+  }
+
+  // ↶ : 마지막으로 저장한 음 하나 취소
+  #stepUndo() {
+    if (!this.stepQueue.length) return;
+    this.stepQueue.pop();
+    this.#stepRenderStrip();
+  }
+
+  #stepRenderStrip() {
+    const strip = this.dom.stepStrip, list = this.dom.stepStripList;
+    if (!strip || !list) return;
     const n = this.stepQueue.length;
-    // ✓/✕ 는 확정 대기 중일 때만 하단 가운데에 뜬다
-    this.dom.stepFabs?.classList.toggle('on', !!this.stepPend);
-    if (this.dom.stepFabName) {
-      this.dom.stepFabName.textContent = this.stepPend ? this.#stepNoteName(this.stepPend.midi) : '—';
+    strip.classList.toggle('on', (!!this.stepMic || n > 0) && !this.stepTapSt);
+    list.innerHTML = '';
+    if (!n) {
+      const e = document.createElement('div');
+      e.className = 'step-strip-empty';
+      e.textContent = '✓ 를 누르면 여기에 쌓입니다';
+      list.appendChild(e);
+    } else {
+      this.stepQueue.forEach((q, idx) => {
+        const b = document.createElement('button');
+        b.className = 'step-chip';
+        b.innerHTML = this.#stepNoteKo(q.midi)
+          + '<span class="step-chip-oct">' + this.#stepOct(q.midi) + '</span>';
+        b.title = '누르면 삭제';
+        b.addEventListener('click', () => {
+          this.stepQueue.splice(idx, 1);
+          this.#stepRenderStrip();
+        });
+        list.appendChild(b);
+      });
+      // 새로 추가된 쪽이 보이도록 끝으로 스크롤
+      requestAnimationFrame(() => { list.scrollLeft = list.scrollWidth; });
     }
-    // 마이크가 켜져 있고 대기 음이 없으면 '부르세요' 안내
-    const hint = this.dom.stepHint;
-    if (hint) hint.classList.toggle('on', !!this.stepMic && !this.stepPend && !this.stepTapSt);
-    // 박자 맞추기는 저장된 음이 있고 대기 중인 음이 없을 때만
-    const pill = this.dom.stepGo;
-    if (pill) {
-      pill.classList.toggle('on', n > 0 && !this.stepPend);
-      pill.textContent = '박자 맞추기 · ' + n + '음';
+    if (this.dom.stepGo) {
+      this.dom.stepGo.disabled = n === 0;
+      this.dom.stepGo.textContent = n ? '박자 맞추기 · ' + n + '음' : '박자 맞추기';
     }
   }
 
-  // ── 박자 맞추기 ──
   #stepTapStart() {
+
     if (!this.stepQueue.length) return;
     this.#stepMicStop();          // 박자 단계에서는 마이크를 놓는다 (드럼 오검출 방지)
-    this.#stepRenderUi();
+    this.#stepRenderTuner();
+    this.#stepRenderStrip();
     this.audio.init();
     const bpm = this.store.bpm;
     this.stepTapSt = { idx: 0, taps: [], bpm, counting: true };
     this.dom.stepTap?.classList.add('on');
+    this.#stepRenderTuner();      // stepTapSt 가 세팅된 뒤라야 튜너/스트립이 숨는다
+    this.#stepRenderStrip();
     if (this.dom.stepTapPad) this.dom.stepTapPad.disabled = true;
     this.audio.startMetroLoop(bpm);
     // 드럼 기본 게인 0.85 는 멜로디를 완전히 덮는다 → 박자 단계에서만 크게 낮춘다.
@@ -8835,7 +8864,7 @@ class App {
 
     this.#stepTapClose(false);
     this.stepQueue = [];
-    this.#stepRenderUi();
+    this.#stepRenderStrip();
     const tst = this.dom.refineToast;
     if (tst) {
       tst.textContent = placed + '음을 그리드에 추가했습니다';
@@ -8851,7 +8880,8 @@ class App {
     this.dom.stepTap?.classList.remove('on');
     if (this.metroOn) this.audio.setMetroLoopGain(0.85);   // 원래 켜져 있었으면 볼륨 복구
     else this.audio.stopMetroLoop();
-    if (keepQueue) this.#stepRenderUi();
+    this.#stepRenderTuner();
+    this.#stepRenderStrip();
   }
 
   #updateNoteGrab() {
