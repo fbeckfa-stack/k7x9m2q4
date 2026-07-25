@@ -502,6 +502,17 @@ body.light .scroll-strip{background:transparent;color:var(--txt);}
 
 /* ── 팝업 FX 도크: < 핸들을 누르면 패널이 튀어나오고, 안에 효과 토글 버튼들 ── */
 .piano-page{position:relative;}
+/* ── 가로 녹음 테이프: 음높이 = 기호+색, 가로 = 박자/길이 ── */
+.live-tape-wrap{position:absolute;left:0;right:0;top:0;height:58px;z-index:72;
+  display:none;pointer-events:none;background:rgba(8,8,8,0.92);
+  border-bottom:1px solid rgba(255,255,255,0.09);}
+.live-tape-wrap.on{display:block;}
+body.light .live-tape-wrap{background:rgba(245,245,245,0.94);}
+.live-tape{display:block;width:100%;height:100%;}
+.live-tape-head{position:absolute;left:0;top:0;width:2px;height:100%;
+  background:var(--play,#E9001E);box-shadow:0 0 6px rgba(232,0,30,0.7);
+  will-change:transform;}
+
 /* 녹음 중 라이브 색상 노트: 왼쪽 버튼 사이드바 위에 겹치는 캔버스.
    터치는 통과시켜 REC 등 버튼은 계속 눌린다. 음이름은 90° 회전(폰을 눕히면 바로 읽힘). */
 .live-side-roll{position:absolute;left:0;top:0;bottom:0;width:96px;height:100%;z-index:70;
@@ -1028,6 +1039,13 @@ body.tab-compose .page.compose .ctrl-bar .layer-step{justify-content:center;widt
 
   <!-- ── [1] 피아노 페이지 (세로 건반) ── -->
   <div class="page piano-page">
+    <!-- 음높이를 세로 위치가 아니라 '기호+색'으로 구분하는 가로 녹음 테이프.
+         x = 시각/길이(박자·서스테인), 색+도레미 기호 = 음높이. 캔버스 높이가 58px로 고정돼
+         작곡 탭 그리드와 같은 방식(노트 변경 시에만 재렌더 + 진행선은 DOM transform)으로 돈다. -->
+    <div class="live-tape-wrap" id="liveTapeWrap">
+      <canvas class="live-tape" id="liveTape"></canvas>
+      <div class="live-tape-head" id="liveTapeHead"></div>
+    </div>
     <canvas class="live-side-roll" id="liveSideRoll"></canvas>
     <div class="live-side-head" id="liveSideHead"></div>
     <!-- 녹음 후 편집: 세로 진행선(스트립-건반 경계) + ◀▶ 드래그 핸들 -->
@@ -1053,12 +1071,6 @@ body.tab-compose .page.compose .ctrl-bar .layer-step{justify-content:center;widt
       <button class="pside-btn" id="recBtn">
         <span class="rec-dot"></span>
         <span class="pside-lbl">REC</span>
-      </button>
-      <button class="pside-btn" id="stepCollectBtn">
-        <svg class="pside-ico" id="stepCollectIco" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><line x1="12" y1="19" x2="12" y2="22"/>
-        </svg>
-        <span class="pside-lbl" id="stepCollectLbl">MELODY</span>
       </button>
       <button class="pside-btn" id="metroBtn">
         <svg class="pside-ico" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
@@ -1295,9 +1307,9 @@ body.tab-compose .page.compose .ctrl-bar .layer-step{justify-content:center;widt
             <path d="M8 3h8l3 18H5L8 3z"/><path d="M12 8l4 8"/><path d="M9 16h6"/>
           </svg>
         </button>
-        <button class="icon-btn mic-wide" id="voiceRecBtn" title="목소리로 멜로디 입력 (메트로놈 없이)">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
-          <span class="mic-lbl">목소리 입력</span>
+        <button class="icon-btn mic-wide" id="stepTunerBtn" title="음높이 재기 — 튜너처럼 음만 재고, ✓ 누른 음만 모아서 나중에 박자를 입힌다">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M4 21h16"/><path d="M8 21v-2M12 21v-3M16 21v-2"/></svg>
+          <span class="mic-lbl" id="stepTunerBtnLbl">음높이 재기</span>
         </button>
       </div>
     </div>
@@ -1309,10 +1321,6 @@ body.tab-compose .page.compose .ctrl-bar .layer-step{justify-content:center;widt
           되돌아가기
         </button>
         <span class="metro-input-hint">드럼에 맞춰 화면을 터치 · 첫 터치부터 시작</span>
-        <button class="metro-mic-btn" id="metroMicBtn" title="목소리로 입력">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
-          <span>목소리</span>
-        </button>
       </div>
       <div class="metro-count-float" id="metroCount">준비</div>
       <button class="metro-pad" id="metroPad"><span>터치</span><small>박자</small></button>
@@ -4359,6 +4367,8 @@ class App {
       stepCollectBtn: document.getElementById('stepCollectBtn'),
       stepCollectIco: document.getElementById('stepCollectIco'),
       stepCollectLbl: document.getElementById('stepCollectLbl'),
+      stepTunerBtn: document.getElementById('stepTunerBtn'),
+      stepTunerBtnLbl: document.getElementById('stepTunerBtnLbl'),
       stepTuner: document.getElementById('stepTuner'),
       stepTunerNote: document.getElementById('stepTunerNote'),
       stepTunerCents: document.getElementById('stepTunerCents'),
@@ -5541,7 +5551,8 @@ class App {
     this.recording = !this.recording;
     this.dom.recBtn.classList.toggle('recording', this.recording);
     if (this.recording) {
-      // 기존 재생/재생바 정리하고 새 녹음 시작 — 녹음 중엔 아무 표시도 띄우지 않는다.
+      // 기존 재생/재생바 정리하고 새 녹음 시작.
+      // (예전에는 렉 때문에 녹음 중 표시를 아예 껐다 → 이제 가로 테이프로 되살린다)
       this.#stopRecPlayback();
       document.getElementById('recPlayback')?.classList.remove('visible');
       document.getElementById('recNotePopup')?.classList.remove('visible');
@@ -5552,6 +5563,7 @@ class App {
       this.audio.init();
       try { prefetchSampleBytes(SAMPLE_MAP[this.store.currentInstrument], DEFAULT_WARM_MIDIS); } catch (_) {}
       try { this.audio.triggerNow({ instrument: this.store.currentInstrument, midi: 69, duration: 0.03, velocity: 0.001 }); } catch (_) {}
+      this.#startLiveRecView();          // 가로 녹음 테이프 표시 시작
     } else {
       this.#stopLiveRecView();
       if (this.recNotes && this.recNotes.length > 0) {
@@ -5637,28 +5649,190 @@ class App {
 
   // 녹음 중 라이브 색상 노트: 왼쪽 버튼 사이드바 위 캔버스에 그린다.
   // (폰을 눕혀 보면 가로로 흐르는 띠가 됨 — 목업과 동일한 배치)
+  // ══════════════════════════════════════════════════════════
+  //  가로 녹음 테이프 (피아노 탭 녹음 표시 전용)
+  //  음높이를 세로 위치가 아니라 '색 + 도레미 기호'로 구분한다. 세로는 겹침 회피용
+  //  서브행일 뿐이라 캔버스 높이가 58px로 고정 → 화면 전체 높이였던 기존 방식보다
+  //  백킹 스토어가 수십 배 작다. 재렌더는 노트가 추가될 때만, 진행선은 DOM transform.
+  // ══════════════════════════════════════════════════════════
+  #tapeInit() {
+    const wrap = document.getElementById('liveTapeWrap');
+    const canvas = document.getElementById('liveTape');
+    const head = document.getElementById('liveTapeHead');
+    if (!wrap || !canvas || !head) return null;
+    this._tape = { wrap, canvas, head, ctx: canvas.getContext('2d'), w: 0, h: 0, page: -1 };
+    return this._tape;
+  }
+
+  #tapeResize() {
+    const t = this._tape;
+    if (!t) return false;
+    const w = t.canvas.clientWidth, h = t.canvas.clientHeight;
+    if (!w || !h) return false;
+    if (t.w !== w || t.h !== h) {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      t.canvas.width = Math.round(w * dpr);
+      t.canvas.height = Math.round(h * dpr);
+      t.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      t.w = w; t.h = h;
+    }
+    return true;
+  }
+
+  #startLiveTape() {
+    const t = this._tape || this.#tapeInit();
+    if (!t) return;
+    t.wrap.classList.add('on');
+    t.page = -1;
+    this.#tapeResize();
+    this.#renderLiveTape();
+  }
+
+  #stopLiveTape() {
+    const t = this._tape;
+    if (!t) return;
+    t.wrap.classList.remove('on');
+    if (t.w) t.ctx.clearRect(0, 0, t.w, t.h);
+  }
+
+  get #tapeWindowSec() { return 6; }
+
+  // 진행선만 이동. 구간이 넘어가면 그때 한 번 캔버스를 다시 그린다.
+  #moveLiveTapeHead() {
+    const t = this._tape;
+    if (!t || !t.w) return;
+    const WIN = this.#tapeWindowSec;
+    const nowSec = (performance.now() - this.recStartTime) / 1000;
+    const page = Math.floor(nowSec / WIN);
+    if (page !== t.page) this.#renderLiveTape();
+    const x = ((nowSec - page * WIN) / WIN) * t.w;
+    t.head.style.transform = 'translateX(' + Math.max(0, Math.min(t.w, x)) + 'px)';
+  }
+
+  #renderLiveTape() {
+    const t = this._tape;
+    if (!t || !this.#tapeResize()) return;
+    const { ctx, w, h } = t;
+    const WIN = this.#tapeWindowSec;
+    const notes = this.recNotes || [];
+
+    const nowSec = this.recording ? (performance.now() - this.recStartTime) / 1000
+                 : (notes.length ? notes[notes.length - 1].timeSec : 0);
+    const page = Math.floor(nowSec / WIN);
+    const pageStart = page * WIN;
+    t.page = page;
+
+    const light = document.body.classList.contains('light');
+    ctx.clearRect(0, 0, w, h);
+
+    // 박자 눈금 — 현재 BPM 기준 비트선(가로 위치가 박자를 뜻하므로 기준선을 준다)
+    const beatSec = 60 / (this.store?.bpm || 120);
+    ctx.strokeStyle = light ? 'rgba(0,0,0,0.10)' : 'rgba(255,255,255,0.09)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const firstBeat = Math.ceil(pageStart / beatSec);
+    for (let bi = firstBeat; bi * beatSec < pageStart + WIN; bi++) {
+      const x = Math.floor(((bi * beatSec - pageStart) / WIN) * w) + 0.5;
+      const bar = (bi % 4 === 0);
+      ctx.moveTo(x, bar ? 0 : h * 0.3);
+      ctx.lineTo(x, h);
+    }
+    ctx.stroke();
+
+    // 이 구간에 걸치는 노트만 (구간 밖은 아예 계산하지 않는다 = 컬링)
+    const PENDING = 0.3;
+    const vis = [];
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
+      if (n.enabled === false) continue;
+      const dur = Math.max(0.07, n.durSec != null ? n.durSec : PENDING);
+      const end = n.timeSec + dur;
+      if (end < pageStart || n.timeSec > pageStart + WIN) continue;
+      vis.push({ n, dur, end });
+    }
+
+    // 서브행 배치는 '겹침 회피'용이지 음높이와 무관하다 (음높이는 색+기호가 담당)
+    const ROWS = 3, pad = 3;
+    const rowH = (h - pad * (ROWS + 1)) / ROWS;
+    const rowEnd = [0, 0, 0];
+    const secToX = (sec) => ((sec - pageStart) / WIN) * w;
+
+    for (const v of vis) {
+      let r = 0;
+      while (r < ROWS - 1 && rowEnd[r] > v.n.timeSec + 0.001) r++;
+      rowEnd[r] = v.end;
+
+      const x0 = Math.max(0, secToX(v.n.timeSec));
+      const x1 = Math.min(w, secToX(v.end));
+      const bw = Math.max(6, x1 - x0);
+      const y = pad + r * (rowH + pad);
+      const col = pitchColor(v.n.midi);
+      const pc = ((v.n.midi % 12) + 12) % 12;
+      const sharp = PITCH_LABELS_KO[pc].includes('#');
+
+      // 캡슐 본체
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = col;
+      this.#roundRect(ctx, x0, y, bw, rowH, Math.min(6, rowH / 2));
+      ctx.fill();
+
+      // 기호 ①: 반음(#)은 사선 해칭 → 색을 구분 못 해도 온음/반음이 바로 보인다
+      if (sharp && bw > 8) {
+        ctx.save();
+        ctx.beginPath();
+        this.#roundRect(ctx, x0, y, bw, rowH, Math.min(6, rowH / 2));
+        ctx.clip();
+        ctx.strokeStyle = 'rgba(0,0,0,0.34)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let sx = x0 - rowH; sx < x0 + bw; sx += 6) {
+          ctx.moveTo(sx, y + rowH); ctx.lineTo(sx + rowH, y);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // 기호 ②: 도레미 이름 + 옥타브 (가로 폭이 좁으면 이름만, 더 좁으면 생략)
+      const label = PITCH_LABELS_KO[pc];
+      const oct = Math.floor(v.n.midi / 12) - 1;
+      if (bw >= 15 && rowH >= 11) {
+        ctx.fillStyle = this.#contrastText(col);
+        ctx.textBaseline = 'middle';
+        const cy = y + rowH / 2;
+        if (bw >= 30) {
+          ctx.textAlign = 'left';
+          ctx.font = '800 ' + Math.min(13, rowH * 0.78).toFixed(0) + 'px -apple-system, sans-serif';
+          ctx.fillText(label, x0 + 5, cy);
+          ctx.font = '600 ' + Math.min(9, rowH * 0.52).toFixed(0) + 'px -apple-system, sans-serif';
+          ctx.globalAlpha = 0.72;
+          ctx.fillText(String(oct), x0 + 6 + ctx.measureText(label).width + 9, cy);
+          ctx.globalAlpha = 1;
+        } else {
+          ctx.textAlign = 'center';
+          ctx.font = '800 ' + Math.min(12, rowH * 0.72).toFixed(0) + 'px -apple-system, sans-serif';
+          ctx.fillText(label, x0 + bw / 2, cy);
+        }
+      }
+      // 기호 ③: 아직 길이가 안 정해진 음(연주 중)은 오른쪽 끝을 열어둔다
+      if (v.n.durSec == null && this.recording) {
+        ctx.fillStyle = light ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.75)';
+        ctx.fillRect(x1 - 2, y + 1, 2, rowH - 2);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
   #startLiveRecView() {
-    const canvas = document.getElementById('liveSideRoll');
-    if (!canvas) return;
-    canvas.classList.add('on');
     if (this._recLaneCount == null) this._recLaneCount = 1;
-    // 캔버스 크기(dpr 반영)
-    const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth || 96, h = canvas.clientHeight || canvas.parentElement.clientHeight;
-    canvas.width = w * dpr; canvas.height = h * dpr;
-    const ctx = canvas.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    this._liveSideSize = { w, h };
     this._liveRecActive = true;
-    document.getElementById('liveSideHead')?.classList.add('on');
-    // 작곡 탭과 동일: 캔버스(노트)는 음이 추가/확정될 때만 그리고,
-    // rAF 루프는 '진행선 DOM의 transform'만 갱신한다 → 캔버스 재렌더 0, 렉 없음.
+    // 녹음 표시는 가로 테이프(음높이 = 색 + 도레미 기호)로. 세로 사이드롤은 켜지 않는다.
+    this.#startLiveTape();
+    // 캔버스는 음이 추가/확정될 때만 그리고, rAF 루프는 진행선 DOM transform만 갱신한다.
     const loop = () => {
       if (!this._liveRecActive) return;
-      this.#moveLiveHead();
+      this.#moveLiveTapeHead();
       this._liveRecRaf = requestAnimationFrame(loop);
     };
-    this.#renderLiveSideRoll();
     this._liveRecRaf = requestAnimationFrame(loop);
   }
   #stopLiveRecView() {
@@ -5667,6 +5841,7 @@ class App {
     if (this._liveRecTimer) clearTimeout(this._liveRecTimer);
     this._liveRecRaf = 0; this._liveRecTimer = 0;
     document.getElementById('liveSideHead')?.classList.remove('on');
+    this.#stopLiveTape();
     const canvas = document.getElementById('liveSideRoll');
     if (canvas) {
       canvas.classList.remove('on');
@@ -5886,7 +6061,7 @@ class App {
     const note = { midi, timeSec: elapsedSec, enabled: true, lane: 0, velocity, durSec: null };
     this.recNotes.push(note);
     // 방금 친 음을 지연 없이 즉시 한 번만 그린다(자라는 애니메이션 없음).
-    if (this._liveRecActive) this.#renderLiveSideRoll();
+    if (this._liveRecActive) this.#renderLiveTape();
     return note;
   }
 
@@ -8537,6 +8712,7 @@ class App {
     this.stepMic = null;    // 측정기 상태
 
     this.dom.stepCollectBtn?.addEventListener('click', () => this.#stepMicToggle());
+    this.dom.stepTunerBtn?.addEventListener('click', () => this.#stepMicToggle());
     this.dom.stepOk?.addEventListener('click', () => this.#stepCapture());
     this.dom.stepNo?.addEventListener('click', () => this.#stepUndo());
     this.dom.stepGo?.addEventListener('click', () => this.#stepTapStart());
@@ -8554,6 +8730,8 @@ class App {
       this.dom.stepCollectLbl.style.color = on ? 'var(--acc)' : '';
       this.dom.stepCollectLbl.textContent = on ? '듣는 중' : 'MELODY';
     }
+    this.dom.stepTunerBtn?.classList.toggle('on', on);
+    if (this.dom.stepTunerBtnLbl) this.dom.stepTunerBtnLbl.textContent = on ? '재는 중' : '음높이 재기';
     this.dom.stepTuner?.classList.toggle('on', on && !this.stepTapSt);
   }
 
