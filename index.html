@@ -3566,14 +3566,27 @@ function humSegments(contour, energy, frameSec, sig, dsSR, H, opts = {}) {
     const clar = opts.clarity || null;
     const durF = (s) => s.endF - s.startF;
 
-    // 1) 프레임별 발성 여부 = 에너지 충분 + 주기성(clarity) 충분
+    // ── pYIN 2단계(Viterbi/HMM)로 디코딩된 프레임별 음정 트랙 ──
+    //  frames[t] = 정수 미디, 무성이면 -1. selfProb 0.99 라서 비브라토로는 상태가 흔들리지 않고,
+    //  옥타브 튐도 전이확률(|Δ| 지수감쇠)이 구조적으로 눌러 준다.
+    //  아래 세 군데에서 쓴다: (A) 발성 판정 보강 (B) 레가토 음 경계 (C) 옥타브 오검출 교정.
+    const vt = opts.vTrack && opts.vTrack.length === n ? opts.vTrack : null;
+
+    // 1) 프레임별 발성 여부 = 에너지 충분 + (주기성 충분 OR Viterbi가 음으로 인정)
+    //    MPM 명료도는 비브라토 골에서 순간적으로 꺼지지만 Viterbi 는 계속 붙들고 있다.
+    //    → 한 음이 명료도 하나 때문에 쪼개지던 문제를 막는다.
     let pkE = 0; for (let i = 0; i < n; i++) pkE = Math.max(pkE, energy[i]);
     const eFloor = Math.max(0.006, pkE * 0.12);
     const voiced = new Array(n);
-    for (let i = 0; i < n; i++) voiced[i] = energy[i] > eFloor && (!clar || clar[i] > 0.45);
+    for (let i = 0; i < n; i++) {
+      const tonal = (!clar || clar[i] > 0.45) || (vt && vt[i] >= 0);
+      voiced[i] = energy[i] > eFloor && tonal;
+    }
     // 2) 비브라토의 순간적 주기성 저하로 생기는 짧은 발성 끊김(≤40ms, 플로시브 없음)은 메움 → 오분리 방지.
     //    (실제 숨/자음 끊김은 보통 40ms↑ → 그대로 경계로 유지)
-    const fillMax = Math.max(3, Math.round(0.040 / frameSec));
+    //  Viterbi 트랙이 있으면 비브라토 보호를 그쪽(1번의 tonal 판정)이 맡아 주므로
+    //  이 창을 좁혀도 안전하다 → 살짝만 끊어 부른 같은 음 연타(40ms 쉼)를 살려낸다.
+    const fillMax = Math.max(3, Math.round((vt ? 0.025 : 0.040) / frameSec));
     for (let i = 0; i < n; i++) {
       if (!voiced[i]) {
         let j = i; while (j < n && !voiced[j]) j++;
@@ -3582,9 +3595,30 @@ function humSegments(contour, energy, frameSec, sig, dsSR, H, opts = {}) {
         i = j;
       }
     }
-    // 3) 발성 구간(run) = 후보 음. 그 안을 플로시브 온셋으로 재분절(최소 간격 REGAP) → 같은 음 연타/음절 분리.
+    // 2-b) 레가토 대응: 끊김도 플로시브도 없이 음만 바뀌는 구간의 경계.
+    //   원시 피치로 이걸 하면 비브라토가 반음 경계를 넘나들며 음이 잘게 부서진다.
+    //   그래서 '디코딩된' Viterbi 트랙만 본다 — 여기서 값이 바뀌었다는 건
+    //   HMM 이 전이 벌점을 물고도 바꿀 만큼 증거가 셌다는 뜻이다.
+    //   그 위에 다시 '새 음이 HOLD 이상 유지될 것'을 요구해 미끄러지는 중의 계단은 버린다.
+    const pitchCuts = new Set();
+    if (vt) {
+      const HOLD = Math.max(2, Math.round(0.060 / frameSec));   // 새 음이 60ms 이상 버텨야 인정
+      const runs = [];
+      let r0 = 0;
+      for (let i = 1; i <= n; i++) if (i === n || vt[i] !== vt[i - 1]) { runs.push({ v: vt[i - 1], s: r0, e: i }); r0 = i; }
+      const solid = runs.filter(r => r.v >= 0 && (r.e - r.s) >= HOLD);   // 짧은 글라이드 구간은 탈락
+      for (let k = 1; k < solid.length; k++) {
+        if (solid[k].v === solid[k - 1].v) continue;                     // 같은 음이면 경계 아님
+        const f = solid[k].s;                                            // 새 음이 안착한 첫 프레임
+        if (f > 0 && f < n && voiced[f]) pitchCuts.add(f);
+      }
+    }
+
+    // 3) 발성 구간(run) = 후보 음. 그 안을 온셋으로 재분절(최소 간격 REGAP).
+    //    경계 근거 두 가지: 플로시브(따·타·카 = 같은 음 연타) + 위의 음정 변화(레가토).
     const bset = new Set();
     if (plosive) for (const f of plosive) if (f > 0 && f < n && voiced[f]) bset.add(f);
+    for (const f of pitchCuts) bset.add(f);
     const REGAP = 0.10, MINNOTE = 0.08;
     const segs = [];
     {
@@ -3636,10 +3670,32 @@ function humSegments(contour, energy, frameSec, sig, dsSR, H, opts = {}) {
         for (let ff = a; ff < b2; ff++) if (sm[ff] > 0) vals.push(sm[ff]);
         if (vals.length) { vals.sort((x, y) => x - y); s.midi = finalize(vals[(vals.length - 1) >> 1]); }
       }
+      // (C) 옥타브 교정 — 서로 독립인 추정치 3개의 다수결.
+      //     ① 넓은 창 한 번 검출(s.midi)  ② 평활 컨투어 중앙값  ③ Viterbi 최빈값
+      //     Viterbi 를 무조건 믿으면 '진짜 옥타브 도약'을 전이 벌점 때문에 눌러 버린다.
+      //     그래서 정확히 한 옥타브 차이로 갈릴 때만, 2표 이상 모인 쪽으로 간다.
+      if (vt) {
+        const wide = s.midi;
+        let smMed = null;
+        { const vals = []; for (let ff = s.startF; ff < s.endF; ff++) if (sm[ff] > 0) vals.push(sm[ff]);
+          if (vals.length) { vals.sort((x, y) => x - y); smMed = finalize(vals[vals.length >> 1]); } }
+        let vmode = null;
+        { const cnt = new Map(); let vF = 0;
+          for (let ff = s.startF; ff < s.endF; ff++) { const m = vt[ff]; if (m < 0) continue; vF++; cnt.set(m, (cnt.get(m) || 0) + 1); }
+          if (vF >= (s.endF - s.startF) * 0.5) { let bc = 0; for (const [m, c] of cnt) if (c > bc) { bc = c; vmode = m; } } }
+        const tally = new Map();
+        for (const v of [wide, smMed, vmode]) if (v != null) tally.set(v, (tally.get(v) || 0) + 1);
+        let winner = null, wc = 0;
+        for (const [v, c] of tally) if (c > wc) { wc = c; winner = v; }
+        const d12 = winner == null ? 0 : Math.abs(winner - wide);
+        if (wc >= 2 && winner !== wide && d12 >= 11 && d12 <= 13) s.midi = winner;
+      }
     }
 
-    // 옥타브 튐 완화(전체 중앙값 기준 → 앞 음 연쇄 전파로 '갑자기 무너지는' 것 방지)
-    if (segs.length) {
+    // 옥타브 튐 완화(전체 중앙값 기준). 이 규칙은 '중앙값에서 9반음 이상 떨어지면 되돌린다'라
+    // 진짜 옥타브 도약이 소수파인 멜로디(예: 도-높은도-도)를 통째로 눌러 버린다.
+    // Viterbi 트랙이 있으면 위 다수결이 훨씬 정확하므로, 없을 때의 폴백으로만 남긴다.
+    if (!vt && segs.length) {
       const allM = segs.map(s => s.midi).slice().sort((a, b) => a - b);
       const gmed = allM[allM.length >> 1];
       for (const s of segs) {
@@ -14258,6 +14314,7 @@ class App {
     const contour = new Array(nFrames).fill(-1);
     const energy = new Float32Array(nFrames);
     const clarity = new Float32Array(nFrames);
+    const candFrames = new Array(nFrames);   // pYIN 후보열 → Viterbi 입력
     const win = new Float32Array(W);
     let f = 0;
     d.el.prog.classList.add('on');
@@ -14272,22 +14329,29 @@ class App {
         for (let i = 0; i < W; i++) win[i] = sig[s + i];
         let e2 = 0; for (let i = 0; i < W; i++) e2 += win[i] * win[i];
         energy[f] = Math.sqrt(e2 / W);
+        let cf = { cands: [], voicedProb: 0 };
         if (energy[f] > 0.005) {
           const fp = humFramePitch(win, dsSR);   // 작곡 탭과 똑같은 융합 규칙(공용)
           contour[f] = fp.midi;
           clarity[f] = fp.clarity;
+          try { cf = pyinCandidates(win, dsSR); } catch (_) {}   // Viterbi 용 후보(확률)
         }
+        candFrames[f] = cf;
         f++;
       }
       d.el.progFill.style.width = Math.round(f / nFrames * 100) + '%';
       if (f < nFrames) { setTimeout(step, 0); return; }
+      // pYIN 2단계: Viterbi/HMM 로 음정 트랙을 전역 디코딩.
+      // 발성 판정 보강 · 레가토 음 경계 · 옥타브 교정에 쓰인다.
+      let vTrack = null;
+      try { vTrack = viterbiPitch(candFrames, 33, 88); } catch (err) { console.warn('[hum viterbi]', err); }
       // 온셋 마커도 작곡 탭과 같은 것을 쓴다 (플로시브 = 따·타·카 같은 고역 버스트)
       let plosive = null;
       try { plosive = plosiveOnsets(sig, H, dsSR, nFrames); } catch (err) { console.warn('[hum plosive]', err); }
       try {
         // 분절·음정확정·옥타브보정·어택 백트래킹까지 전부 공용 humSegments 가 한다.
         // → 작곡 탭 목소리 입력의 재분석 결과와 완전히 같은 음이 나온다.
-        const rawSegs = humSegments(contour, energy, frameSecOf(H, dsSR), sig, dsSR, H, { plosive, clarity });
+        const rawSegs = humSegments(contour, energy, frameSecOf(H, dsSR), sig, dsSR, H, { plosive, clarity, vTrack });
         d.segs = this.#humToSeconds(rawSegs, frameSecOf(H, dsSR), dsSR);
       } catch (err) { console.warn('[hum segment]', err); d.segs = []; }
       d.el.prog.classList.remove('on');
