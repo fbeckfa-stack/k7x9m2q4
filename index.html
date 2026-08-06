@@ -3516,6 +3516,164 @@ function makeSatCurve(amt01) {
 // ════════════════════════════════════════════════════════════
 //  AudioEngine
 // ════════════════════════════════════════════════════════════
+// ── 흥얼거림 분절(공용) ────────────────────────────────────────────
+//  작곡 탭의 목소리 입력 재분석(#applyRefine)과 허밍 탭이 '똑같은' 결과를 내도록,
+//  분석 로직 전체를 여기 한 곳에만 둔다. (예전에는 허밍 탭이 복사본을 갖고 있어
+//   한쪽만 고치면 두 탭의 결과가 조용히 갈라졌다.)
+//  입력: 프레임별 피치 컨투어(실수 미디)·에너지, 프레임 간격(초), 원신호와 그 샘플레이트/hop
+//  출력: [{ startF, endF, midi, reonset, startSample }]  — 프레임 단위 구간 + 샘플 단위 어택 시각
+// 프레임 1개의 피치(실수 미디)와 명료도. MPM(명료도)+YIN 융합 —
+// 둘이 반음 이내로 일치하면 신뢰하고, 어긋나면 명료도가 높은 쪽을 채택해
+// YIN 의 이중검출(옥타브 오류)을 눌러 준다. 무성/실패 시 midi = -1.
+const frameSecOf = (H, dsSR) => H / dsSR;
+
+function humFramePitch(win, dsSR) {
+  const mp = detectPitchMPM(win, dsSR);
+  const fy = detectPitchYIN(win, dsSR);
+  const myMidi = mp.freq > 0 ? 69 + 12 * Math.log2(mp.freq / 440) : NaN;
+  const yMidi = fy > 0 ? 69 + 12 * Math.log2(fy / 440) : NaN;
+  let fHz = -1;
+  if (mp.freq > 0 && fy > 0 && Math.abs(myMidi - yMidi) <= 1) fHz = (mp.clarity >= 0.9 ? mp.freq : fy);
+  else if (mp.freq > 0 && mp.clarity >= 0.9) fHz = mp.freq;
+  else if (fy > 0) fHz = fy;
+  else if (mp.freq > 0) fHz = mp.freq;
+  return { midi: fHz > 0 ? 69 + 12 * Math.log2(fHz / 440) : -1, clarity: mp.clarity };
+}
+
+function humSegments(contour, energy, frameSec, sig, dsSR, H, opts = {}) {
+    const n = contour.length;
+    // 중앙값 평활(±2)
+    const sm = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const w = [];
+      for (let k = -2; k <= 2; k++) { const v = contour[i + k]; if (v > 0) w.push(v); }
+      if (!w.length) { sm[i] = -1; continue; }
+      w.sort((a, b) => a - b); sm[i] = w[(w.length - 1) >> 1];
+    }
+    // 자동 튜닝(격자 편차 중앙값 보정)만 적용. 무조건 올리는 바이어스는 제거(항상 반음 높아지던 원인).
+    const PITCH_SHIFT = 0;      // 전반적으로 낮으면 0.3~0.5, 높으면 음수. 지금은 자동튜닝만.
+    const fracs = [];
+    for (let i = 0; i < n; i++) if (sm[i] > 0) fracs.push(sm[i] - Math.round(sm[i]));
+    let centOffset = 0;
+    if (fracs.length) { fracs.sort((a, b) => a - b); centOffset = fracs[(fracs.length - 1) >> 1]; }
+    const finalize = (x) => Math.max(24, Math.min(107, Math.round(x - centOffset + PITCH_SHIFT)));
+
+    // ── 분절(박자 우선): 발성 끊김(숨/자음) + 플로시브 온셋 기준으로 나눈다. ──
+    // 비브라토는 발성(공기 흐름)을 끊지 않으므로 한 음으로 유지된다. 음정 변화로는 나누지 않아
+    // 떨림이 반음 경계를 넘나들며 쪼개지던 문제가 구조적으로 사라진다. (음정은 사용자가 조절)
+    const onsets = opts.onsets || null;          // superflux(참고용, 분절 기준으로는 미사용)
+    const plosive = opts.plosive || null;        // 고역 버스트(따·타·카) = 확신 높은 박자 마커
+    const clar = opts.clarity || null;
+    const durF = (s) => s.endF - s.startF;
+
+    // 1) 프레임별 발성 여부 = 에너지 충분 + 주기성(clarity) 충분
+    let pkE = 0; for (let i = 0; i < n; i++) pkE = Math.max(pkE, energy[i]);
+    const eFloor = Math.max(0.006, pkE * 0.12);
+    const voiced = new Array(n);
+    for (let i = 0; i < n; i++) voiced[i] = energy[i] > eFloor && (!clar || clar[i] > 0.45);
+    // 2) 비브라토의 순간적 주기성 저하로 생기는 짧은 발성 끊김(≤40ms, 플로시브 없음)은 메움 → 오분리 방지.
+    //    (실제 숨/자음 끊김은 보통 40ms↑ → 그대로 경계로 유지)
+    const fillMax = Math.max(3, Math.round(0.040 / frameSec));
+    for (let i = 0; i < n; i++) {
+      if (!voiced[i]) {
+        let j = i; while (j < n && !voiced[j]) j++;
+        let hasP = false; if (plosive) for (let f = i; f < j; f++) if (plosive.has(f)) { hasP = true; break; }
+        if ((j - i) <= fillMax && !hasP) for (let k = i; k < j; k++) voiced[k] = true;
+        i = j;
+      }
+    }
+    // 3) 발성 구간(run) = 후보 음. 그 안을 플로시브 온셋으로 재분절(최소 간격 REGAP) → 같은 음 연타/음절 분리.
+    const bset = new Set();
+    if (plosive) for (const f of plosive) if (f > 0 && f < n && voiced[f]) bset.add(f);
+    const REGAP = 0.10, MINNOTE = 0.08;
+    const segs = [];
+    {
+      let i = 0;
+      while (i < n) {
+        if (!voiced[i]) { i++; continue; }
+        let j = i; while (j < n && voiced[j]) j++;
+        const cuts = [i];
+        const inside = [...bset].filter(f => f > i && f < j).sort((a, b) => a - b);
+        for (const f of inside) if ((f - cuts[cuts.length - 1]) * frameSec >= REGAP) cuts.push(f);
+        cuts.push(j);
+        for (let c = 0; c < cuts.length - 1; c++) {
+          const s0 = cuts[c], e0 = cuts[c + 1];
+          if ((e0 - s0) * frameSec >= MINNOTE) {
+            const vals = []; for (let ff = s0; ff < e0; ff++) if (sm[ff] > 0) vals.push(sm[ff]);
+            vals.sort((a, b) => a - b);
+            segs.push({ startF: s0, endF: e0, midi: vals.length ? finalize(vals[vals.length >> 1]) : 60, reonset: bset.has(s0) });
+          }
+        }
+        i = j;
+      }
+    }
+
+    // D) 음정 재산출(다중해상도): 각 세그먼트 안정 중앙부를 '넓은 창'으로 한 번 정밀 검출 →
+    //    빠른 음은 짧은 창으로 분리하되 음정 자체는 넓은 창 평균으로 안정화(둘의 장점 결합).
+    for (const s of segs) {
+      const trim = Math.floor(durF(s) * 0.2);
+      const a = s.startF + trim, b2 = Math.max(a + 1, s.endF - trim);
+      let done = false;
+      if (sig && dsSR) {
+        const startS = a * H, endS = b2 * H;
+        const wideW = Math.min(2048, Math.max(384, endS - startS));
+        let ws = Math.floor((startS + endS) / 2) - (wideW >> 1);
+        ws = Math.max(0, Math.min(sig.length - wideW, ws));
+        if (wideW >= 384 && ws >= 0 && ws + wideW <= sig.length) {
+          const segBuf = sig.subarray(ws, ws + wideW);
+          const mp = detectPitchMPM(segBuf, dsSR);            // 넓은 창: MPM(명료도)+YIN 융합으로 최종 음정 확정
+          const fy = detectPitchYIN(segBuf, dsSR);
+          let fHz = -1;
+          if (mp.freq > 0 && fy > 0) {
+            const dm = Math.abs((69 + 12 * Math.log2(mp.freq / 440)) - (69 + 12 * Math.log2(fy / 440)));
+            fHz = (dm <= 1) ? (mp.clarity >= 0.9 ? mp.freq : fy) : (mp.clarity >= 0.92 ? mp.freq : fy);
+          } else fHz = mp.freq > 0 ? mp.freq : fy;
+          if (fHz > 0) { s.midi = finalize(69 + 12 * Math.log2(fHz / 440)); done = true; }
+        }
+      }
+      if (!done) {   // 폴백: 프레임 중앙값
+        const vals = [];
+        for (let ff = a; ff < b2; ff++) if (sm[ff] > 0) vals.push(sm[ff]);
+        if (vals.length) { vals.sort((x, y) => x - y); s.midi = finalize(vals[(vals.length - 1) >> 1]); }
+      }
+    }
+
+    // 옥타브 튐 완화(전체 중앙값 기준 → 앞 음 연쇄 전파로 '갑자기 무너지는' 것 방지)
+    if (segs.length) {
+      const allM = segs.map(s => s.midi).slice().sort((a, b) => a - b);
+      const gmed = allM[allM.length >> 1];
+      for (const s of segs) {
+        if (s.midi - gmed >= 9 && s.midi - 12 >= 24) s.midi -= 12;        // 옥타브 위로 튄 것
+        else if (gmed - s.midi >= 9 && s.midi + 12 <= 107) s.midi += 12;  // 옥타브 아래로 튄 것
+      }
+    }
+
+    // ── 온셋 타이밍 정렬(백트래킹) ── librosa onset_backtrack 방식(Jehan 2005 "Creating Music by Listening").
+    // 격자 스냅 없이(자연 리듬 유지) 각 음의 '시작 시각'만 실제 어택 순간에 정밀 정렬한다.
+    // 검출된 시작을 '바로 앞 에너지 국소최소(골)'로 되돌려 피치 안정/분석창 지연을 제거 →
+    // 사람이 실제로 그 음을 시작한 시점(어택)에 샘플 단위로 스냅 = 흥얼거린 박자와 그대로 싱크.
+    for (let si = 0; si < segs.length; si++) {
+      const s = segs[si];
+      const centerS = Math.min(s.startF * H, sig.length - 1);
+      const prevEndS = si > 0 ? (segs[si - 1].endF * H) : 0;
+      const maxBackS = Math.round(0.12 * dsSR);                 // 최대 120ms까지만 되돌림(앞 음 침범 방지)
+      const lowS = Math.max(0, prevEndS, centerS - maxBackS);
+      const Wf = Math.max(16, Math.round(0.008 * dsSR));        // RMS 창 8ms(어택 램프에서 매끈)
+      const hf = Math.max(8, Math.round(0.001 * dsSR));         // 탐색 hop 1ms(샘플 정밀)
+      const rmsAt = (pos) => { let e = 0, c = 0; const end = Math.min(sig.length, pos + Wf); for (let i = Math.max(0, pos); i < end; i++) { e += sig[i] * sig[i]; c++; } return c ? Math.sqrt(e / c) : 0; };
+      // 음 본체 피크(pk)와 직전 골(valley) 사이의 '어택 발밑(valley+15%)' 문턱까지 되돌림 →
+      // 진짜 어택 순간에 안착. 무음이든 레가토든 골 드리프트 없이 ±2ms 수준으로 시작을 정렬.
+      let pk = 0; const e2 = Math.min(sig.length, centerS + Math.round(0.06 * dsSR));
+      for (let p = centerS; p < e2; p += hf) pk = Math.max(pk, rmsAt(p));
+      let valley = Infinity; for (let p = lowS; p <= centerS; p += hf) valley = Math.min(valley, rmsAt(p));
+      const thr = valley + 0.15 * (pk - valley);
+      let p = centerS; for (; p > lowS; p -= hf) { if (rmsAt(p) < thr) break; }
+      s.startSample = Math.max(lowS, p);                        // 샘플 단위 어택 시각
+    }
+
+    return segs;
+}
+
 class AudioEngine {
   #ctx = null; #master; #outGain; #masterFilter; #compressor; #limiter; #fxBus; #lowLatency = true; #metroLoopTimer = null;
   #delayInput; #delayNode; #delayFb; #delayWet;
@@ -6821,19 +6979,9 @@ class App {
           energy[f] = rm;
           let cf = { cands: [], voicedProb: 0 };
           if (rm > 0.005) {
-            // 프레임 피치: MPM(명료도)+YIN 융합 — 반음 이내로 일치하면 신뢰,
-            //             불일치 시 명료도 높은 쪽 채택(YIN 이중검출/옥타브 오류 완화).
-            const mp = detectPitchMPM(win, dsSR);
-            const fy = detectPitchYIN(win, dsSR);
-            const myMidi = mp.freq > 0 ? 69 + 12 * Math.log2(mp.freq / 440) : NaN;
-            const yMidi  = fy > 0 ? 69 + 12 * Math.log2(fy / 440) : NaN;
-            let fHz = -1;
-            if (mp.freq > 0 && fy > 0 && Math.abs(myMidi - yMidi) <= 1) fHz = (mp.clarity >= 0.9 ? mp.freq : fy);
-            else if (mp.freq > 0 && mp.clarity >= 0.9) fHz = mp.freq;
-            else if (fy > 0) fHz = fy;
-            else if (mp.freq > 0) fHz = mp.freq;
-            if (fHz > 0) contour[f] = 69 + 12 * Math.log2(fHz / 440);   // 실수 미디(센트 보존)
-            clarity[f] = mp.clarity;
+            const fp = humFramePitch(win, dsSR);          // 허밍 탭과 똑같은 융합 규칙(공용)
+            contour[f] = fp.midi;                         // 실수 미디(센트 보존), 무성이면 -1
+            clarity[f] = fp.clarity;
             cf = pyinCandidates(win, dsSR);               // Viterbi용 후보(확률)
           }
           candFrames[f] = cf;
@@ -6897,135 +7045,7 @@ class App {
   }
 
   #applyRefine(contour, energy, frameSec, recStartBeat, beatSec, oldIds, sig, dsSR, H, opts = {}) {
-    const n = contour.length;
-    // 중앙값 평활(±2)
-    const sm = new Array(n);
-    for (let i = 0; i < n; i++) {
-      const w = [];
-      for (let k = -2; k <= 2; k++) { const v = contour[i + k]; if (v > 0) w.push(v); }
-      if (!w.length) { sm[i] = -1; continue; }
-      w.sort((a, b) => a - b); sm[i] = w[(w.length - 1) >> 1];
-    }
-    // 자동 튜닝(격자 편차 중앙값 보정)만 적용. 무조건 올리는 바이어스는 제거(항상 반음 높아지던 원인).
-    const PITCH_SHIFT = 0;      // 전반적으로 낮으면 0.3~0.5, 높으면 음수. 지금은 자동튜닝만.
-    const fracs = [];
-    for (let i = 0; i < n; i++) if (sm[i] > 0) fracs.push(sm[i] - Math.round(sm[i]));
-    let centOffset = 0;
-    if (fracs.length) { fracs.sort((a, b) => a - b); centOffset = fracs[(fracs.length - 1) >> 1]; }
-    const finalize = (x) => Math.max(24, Math.min(107, Math.round(x - centOffset + PITCH_SHIFT)));
-
-    // ── 분절(박자 우선): 발성 끊김(숨/자음) + 플로시브 온셋 기준으로 나눈다. ──
-    // 비브라토는 발성(공기 흐름)을 끊지 않으므로 한 음으로 유지된다. 음정 변화로는 나누지 않아
-    // 떨림이 반음 경계를 넘나들며 쪼개지던 문제가 구조적으로 사라진다. (음정은 사용자가 조절)
-    const onsets = opts.onsets || null;          // superflux(참고용, 분절 기준으로는 미사용)
-    const plosive = opts.plosive || null;        // 고역 버스트(따·타·카) = 확신 높은 박자 마커
-    const clar = opts.clarity || null;
-    const durF = (s) => s.endF - s.startF;
-
-    // 1) 프레임별 발성 여부 = 에너지 충분 + 주기성(clarity) 충분
-    let pkE = 0; for (let i = 0; i < n; i++) pkE = Math.max(pkE, energy[i]);
-    const eFloor = Math.max(0.006, pkE * 0.12);
-    const voiced = new Array(n);
-    for (let i = 0; i < n; i++) voiced[i] = energy[i] > eFloor && (!clar || clar[i] > 0.45);
-    // 2) 비브라토의 순간적 주기성 저하로 생기는 짧은 발성 끊김(≤40ms, 플로시브 없음)은 메움 → 오분리 방지.
-    //    (실제 숨/자음 끊김은 보통 40ms↑ → 그대로 경계로 유지)
-    const fillMax = Math.max(3, Math.round(0.040 / frameSec));
-    for (let i = 0; i < n; i++) {
-      if (!voiced[i]) {
-        let j = i; while (j < n && !voiced[j]) j++;
-        let hasP = false; if (plosive) for (let f = i; f < j; f++) if (plosive.has(f)) { hasP = true; break; }
-        if ((j - i) <= fillMax && !hasP) for (let k = i; k < j; k++) voiced[k] = true;
-        i = j;
-      }
-    }
-    // 3) 발성 구간(run) = 후보 음. 그 안을 플로시브 온셋으로 재분절(최소 간격 REGAP) → 같은 음 연타/음절 분리.
-    const bset = new Set();
-    if (plosive) for (const f of plosive) if (f > 0 && f < n && voiced[f]) bset.add(f);
-    const REGAP = 0.10, MINNOTE = 0.08;
-    const segs = [];
-    {
-      let i = 0;
-      while (i < n) {
-        if (!voiced[i]) { i++; continue; }
-        let j = i; while (j < n && voiced[j]) j++;
-        const cuts = [i];
-        const inside = [...bset].filter(f => f > i && f < j).sort((a, b) => a - b);
-        for (const f of inside) if ((f - cuts[cuts.length - 1]) * frameSec >= REGAP) cuts.push(f);
-        cuts.push(j);
-        for (let c = 0; c < cuts.length - 1; c++) {
-          const s0 = cuts[c], e0 = cuts[c + 1];
-          if ((e0 - s0) * frameSec >= MINNOTE) {
-            const vals = []; for (let ff = s0; ff < e0; ff++) if (sm[ff] > 0) vals.push(sm[ff]);
-            vals.sort((a, b) => a - b);
-            segs.push({ startF: s0, endF: e0, midi: vals.length ? finalize(vals[vals.length >> 1]) : 60, reonset: bset.has(s0) });
-          }
-        }
-        i = j;
-      }
-    }
-
-    // D) 음정 재산출(다중해상도): 각 세그먼트 안정 중앙부를 '넓은 창'으로 한 번 정밀 검출 →
-    //    빠른 음은 짧은 창으로 분리하되 음정 자체는 넓은 창 평균으로 안정화(둘의 장점 결합).
-    for (const s of segs) {
-      const trim = Math.floor(durF(s) * 0.2);
-      const a = s.startF + trim, b2 = Math.max(a + 1, s.endF - trim);
-      let done = false;
-      if (sig && dsSR) {
-        const startS = a * H, endS = b2 * H;
-        const wideW = Math.min(2048, Math.max(384, endS - startS));
-        let ws = Math.floor((startS + endS) / 2) - (wideW >> 1);
-        ws = Math.max(0, Math.min(sig.length - wideW, ws));
-        if (wideW >= 384 && ws >= 0 && ws + wideW <= sig.length) {
-          const segBuf = sig.subarray(ws, ws + wideW);
-          const mp = detectPitchMPM(segBuf, dsSR);            // 넓은 창: MPM(명료도)+YIN 융합으로 최종 음정 확정
-          const fy = detectPitchYIN(segBuf, dsSR);
-          let fHz = -1;
-          if (mp.freq > 0 && fy > 0) {
-            const dm = Math.abs((69 + 12 * Math.log2(mp.freq / 440)) - (69 + 12 * Math.log2(fy / 440)));
-            fHz = (dm <= 1) ? (mp.clarity >= 0.9 ? mp.freq : fy) : (mp.clarity >= 0.92 ? mp.freq : fy);
-          } else fHz = mp.freq > 0 ? mp.freq : fy;
-          if (fHz > 0) { s.midi = finalize(69 + 12 * Math.log2(fHz / 440)); done = true; }
-        }
-      }
-      if (!done) {   // 폴백: 프레임 중앙값
-        const vals = [];
-        for (let ff = a; ff < b2; ff++) if (sm[ff] > 0) vals.push(sm[ff]);
-        if (vals.length) { vals.sort((x, y) => x - y); s.midi = finalize(vals[(vals.length - 1) >> 1]); }
-      }
-    }
-
-    // 옥타브 튐 완화(전체 중앙값 기준 → 앞 음 연쇄 전파로 '갑자기 무너지는' 것 방지)
-    if (segs.length) {
-      const allM = segs.map(s => s.midi).slice().sort((a, b) => a - b);
-      const gmed = allM[allM.length >> 1];
-      for (const s of segs) {
-        if (s.midi - gmed >= 9 && s.midi - 12 >= 24) s.midi -= 12;        // 옥타브 위로 튄 것
-        else if (gmed - s.midi >= 9 && s.midi + 12 <= 107) s.midi += 12;  // 옥타브 아래로 튄 것
-      }
-    }
-
-    // ── 온셋 타이밍 정렬(백트래킹) ── librosa onset_backtrack 방식(Jehan 2005 "Creating Music by Listening").
-    // 격자 스냅 없이(자연 리듬 유지) 각 음의 '시작 시각'만 실제 어택 순간에 정밀 정렬한다.
-    // 검출된 시작을 '바로 앞 에너지 국소최소(골)'로 되돌려 피치 안정/분석창 지연을 제거 →
-    // 사람이 실제로 그 음을 시작한 시점(어택)에 샘플 단위로 스냅 = 흥얼거린 박자와 그대로 싱크.
-    for (let si = 0; si < segs.length; si++) {
-      const s = segs[si];
-      const centerS = Math.min(s.startF * H, sig.length - 1);
-      const prevEndS = si > 0 ? (segs[si - 1].endF * H) : 0;
-      const maxBackS = Math.round(0.12 * dsSR);                 // 최대 120ms까지만 되돌림(앞 음 침범 방지)
-      const lowS = Math.max(0, prevEndS, centerS - maxBackS);
-      const Wf = Math.max(16, Math.round(0.008 * dsSR));        // RMS 창 8ms(어택 램프에서 매끈)
-      const hf = Math.max(8, Math.round(0.001 * dsSR));         // 탐색 hop 1ms(샘플 정밀)
-      const rmsAt = (pos) => { let e = 0, c = 0; const end = Math.min(sig.length, pos + Wf); for (let i = Math.max(0, pos); i < end; i++) { e += sig[i] * sig[i]; c++; } return c ? Math.sqrt(e / c) : 0; };
-      // 음 본체 피크(pk)와 직전 골(valley) 사이의 '어택 발밑(valley+15%)' 문턱까지 되돌림 →
-      // 진짜 어택 순간에 안착. 무음이든 레가토든 골 드리프트 없이 ±2ms 수준으로 시작을 정렬.
-      let pk = 0; const e2 = Math.min(sig.length, centerS + Math.round(0.06 * dsSR));
-      for (let p = centerS; p < e2; p += hf) pk = Math.max(pk, rmsAt(p));
-      let valley = Infinity; for (let p = lowS; p <= centerS; p += hf) valley = Math.min(valley, rmsAt(p));
-      const thr = valley + 0.15 * (pk - valley);
-      let p = centerS; for (; p > lowS; p -= hf) { if (rmsAt(p) < thr) break; }
-      s.startSample = Math.max(lowS, p);                        // 샘플 단위 어택 시각
-    }
+    const segs = humSegments(contour, energy, frameSec, sig, dsSR, H, opts);
 
     // 라이브 노트 제거 후 재분석 결과로 교체 — 그리드 양자화 없이 '실제 부른 시점/길이' 그대로
     if (oldIds) for (const id of oldIds) this.store.removeNote(id);
@@ -14030,7 +14050,7 @@ class App {
     // 출력은 게인 0 으로 destination 에 물려야 노드가 살아 있는다(하울링 없음).
     const sp = ctx.createScriptProcessor(4096, 1, 1);
     const zero = ctx.createGain(); zero.gain.value = 0;
-    const MAXSEC = 90;                         // 최대 1분 30초
+    const MAXSEC = 45;                         // 최대 45초 — 작곡 탭 재분석 버퍼와 같은 상한
     sp.onaudioprocess = (ev) => {
       if (!d.recording) return;
       const ch = ev.inputBuffer.getChannelData(0);
@@ -14045,7 +14065,7 @@ class App {
     d.recording = true;
     d.t0 = ctx.currentTime;
     d.el.recBtn.classList.add('rec');
-    d.el.sub.textContent = '녹음 중 — 다시 누르면 멈춰요 (최대 1분 30초)';
+    d.el.sub.textContent = '녹음 중 — 다시 누르면 멈춰요 (최대 45초)';
     if (navigator.vibrate) { try { navigator.vibrate(12); } catch (_) {} }
 
     const tick = () => {
@@ -14229,11 +14249,9 @@ class App {
     const M = Math.floor(raw.length / ds);
     const sig = new Float32Array(M);
     for (let i = 0; i < M; i++) { let s = 0; const b = i * ds; for (let j = 0; j < ds; j++) s += raw[b + j]; sig[i] = s / ds; }
-    // 창은 32ms 고정, hop 은 길이에 따라 늘린다.
-    //  긴 녹음에서 8ms hop 을 고집하면 프레임 수가 수천~수만이 되어 분석이 하염없이 길어진다.
-    //  시작 시각은 뒤에서 '어택 백트래킹'으로 샘플 단위로 다시 맞추므로 hop 이 커도 박자는 안 흐트러진다.
-    const approxSec = M / dsSR;
-    const W = 512, H = approxSec <= 20 ? 128 : (approxSec <= 45 ? 192 : 256);
+    // 창 32ms / hop 8ms — 작곡 탭 재분석(#refineVoiceRecording)과 같은 값.
+    // 빠른 음을 분리할 만큼 짧은 창을 쓰고, 음정 안정은 뒤의 '넓은 창' 재검출로 따로 확보한다.
+    const W = 512, H = 128;
     const nFrames = Math.floor((M - W) / H) + 1;
     if (nFrames < 4) { d.el.sub.textContent = '녹음이 너무 짧아 분석할 수 없어요'; return; }
 
@@ -14255,26 +14273,22 @@ class App {
         let e2 = 0; for (let i = 0; i < W; i++) e2 += win[i] * win[i];
         energy[f] = Math.sqrt(e2 / W);
         if (energy[f] > 0.005) {
-          const mp = detectPitchMPM(win, dsSR);
-          const fy = detectPitchYIN(win, dsSR);
-          const myMidi = mp.freq > 0 ? 69 + 12 * Math.log2(mp.freq / 440) : NaN;
-          const yMidi = fy > 0 ? 69 + 12 * Math.log2(fy / 440) : NaN;
-          let fHz = -1;
-          if (mp.freq > 0 && fy > 0 && Math.abs(myMidi - yMidi) <= 1) fHz = (mp.clarity >= 0.9 ? mp.freq : fy);
-          else if (mp.freq > 0 && mp.clarity >= 0.9) fHz = mp.freq;
-          else if (fy > 0) fHz = fy;
-          else if (mp.freq > 0) fHz = mp.freq;
-          if (fHz > 0) contour[f] = 69 + 12 * Math.log2(fHz / 440);
-          clarity[f] = mp.clarity;
+          const fp = humFramePitch(win, dsSR);   // 작곡 탭과 똑같은 융합 규칙(공용)
+          contour[f] = fp.midi;
+          clarity[f] = fp.clarity;
         }
         f++;
       }
       d.el.progFill.style.width = Math.round(f / nFrames * 100) + '%';
       if (f < nFrames) { setTimeout(step, 0); return; }
+      // 온셋 마커도 작곡 탭과 같은 것을 쓴다 (플로시브 = 따·타·카 같은 고역 버스트)
       let plosive = null;
       try { plosive = plosiveOnsets(sig, H, dsSR, nFrames); } catch (err) { console.warn('[hum plosive]', err); }
       try {
-        d.segs = this.#humSegment(contour, energy, clarity, H / dsSR, sig, dsSR, H, { plosive });
+        // 분절·음정확정·옥타브보정·어택 백트래킹까지 전부 공용 humSegments 가 한다.
+        // → 작곡 탭 목소리 입력의 재분석 결과와 완전히 같은 음이 나온다.
+        const rawSegs = humSegments(contour, energy, frameSecOf(H, dsSR), sig, dsSR, H, { plosive, clarity });
+        d.segs = this.#humToSeconds(rawSegs, frameSecOf(H, dsSR), dsSR);
       } catch (err) { console.warn('[hum segment]', err); d.segs = []; }
       d.el.prog.classList.remove('on');
       d.el.goBtn.disabled = false;
@@ -14291,121 +14305,18 @@ class App {
     setTimeout(step, 0);
   }
 
-  // ── 분절: 발성 구간(에너지+주기성)으로 나누고, 플로시브 온셋으로 다시 쪼갠다 ──
-  //  비브라토는 발성이 끊기지 않으니 한 음으로 유지된다(음정 흔들림으로 쪼개지 않는다).
-  //  각 조각의 음정은 '넓은 창'으로 한 번 더 정밀 검출해 확정한다.
-  //  반환: [{ t0, t1, midi }] (초 단위)
-  #humSegment(contour, energy, clar, frameSec, sig, dsSR, H, opts = {}) {
-    const n = contour.length;
-    const plosive = opts.plosive || null;
-    // 중앙값 평활(±2)
-    const sm = new Array(n);
-    for (let i = 0; i < n; i++) {
-      const w = [];
-      for (let k = -2; k <= 2; k++) { const v = contour[i + k]; if (v > 0) w.push(v); }
-      if (!w.length) { sm[i] = -1; continue; }
-      w.sort((a, b) => a - b); sm[i] = w[(w.length - 1) >> 1];
-    }
-    // 자동 튜닝: 반음 격자에서 벗어난 정도의 중앙값만큼 통째로 되돌린다
-    const fracs = [];
-    for (let i = 0; i < n; i++) if (sm[i] > 0) fracs.push(sm[i] - Math.round(sm[i]));
-    let centOffset = 0;
-    if (fracs.length) { fracs.sort((a, b) => a - b); centOffset = fracs[(fracs.length - 1) >> 1]; }
-    const finalize = (x) => Math.max(24, Math.min(107, Math.round(x - centOffset)));
-
-    // 1) 프레임별 발성 여부
-    let pkE = 0; for (let i = 0; i < n; i++) pkE = Math.max(pkE, energy[i]);
-    const eFloor = Math.max(0.006, pkE * 0.12);
-    const voiced = new Array(n);
-    for (let i = 0; i < n; i++) voiced[i] = energy[i] > eFloor && (!clar || clar[i] > 0.45);
-    // 2) 아주 짧은 끊김(≤40ms, 플로시브 없음)은 메운다 — 비브라토로 인한 오분리 방지
-    const fillMax = Math.max(3, Math.round(0.040 / frameSec));
-    for (let i = 0; i < n; i++) {
-      if (!voiced[i]) {
-        let j = i; while (j < n && !voiced[j]) j++;
-        let hasP = false; if (plosive) for (let x = i; x < j; x++) if (plosive.has(x)) { hasP = true; break; }
-        if ((j - i) <= fillMax && !hasP) for (let k = i; k < j; k++) voiced[k] = true;
-        i = j;
-      }
-    }
-    // 3) 발성 구간 안을 플로시브 온셋으로 재분절 (같은 음 연타 분리)
-    const bset = new Set();
-    if (plosive) for (const x of plosive) if (x > 0 && x < n && voiced[x]) bset.add(x);
-    const REGAP = 0.10, MINNOTE = 0.075;
-    const segs = [];
-    let i = 0;
-    while (i < n) {
-      if (!voiced[i]) { i++; continue; }
-      let j = i; while (j < n && voiced[j]) j++;
-      const cuts = [i];
-      const inside = [...bset].filter(x => x > i && x < j).sort((a, b) => a - b);
-      for (const x of inside) if ((x - cuts[cuts.length - 1]) * frameSec >= REGAP) cuts.push(x);
-      cuts.push(j);
-      for (let c = 0; c < cuts.length - 1; c++) {
-        const s0 = cuts[c], e0 = cuts[c + 1];
-        if ((e0 - s0) * frameSec >= MINNOTE) {
-          const vals = []; for (let ff = s0; ff < e0; ff++) if (sm[ff] > 0) vals.push(sm[ff]);
-          vals.sort((a, b) => a - b);
-          segs.push({ startF: s0, endF: e0, midi: vals.length ? finalize(vals[vals.length >> 1]) : 60 });
-        }
-      }
-      i = j;
-    }
-    if (!segs.length) return [];
-
-    // 4) 음정 확정: 조각 중앙부를 '넓은 창'으로 다시 검출 (짧은 창의 흔들림 제거)
-    for (const s of segs) {
-      const len = s.endF - s.startF;
-      const trim = Math.floor(len * 0.2);
-      const a = s.startF + trim, b2 = Math.max(a + 1, s.endF - trim);
-      const startS = a * H, endS = b2 * H;
-      const wideW = Math.min(2048, Math.max(384, endS - startS));
-      let ws = Math.floor((startS + endS) / 2) - (wideW >> 1);
-      ws = Math.max(0, Math.min(sig.length - wideW, ws));
-      if (wideW >= 384 && ws >= 0 && ws + wideW <= sig.length) {
-        const segBuf = sig.subarray(ws, ws + wideW);
-        const mp = detectPitchMPM(segBuf, dsSR);
-        const fy = detectPitchYIN(segBuf, dsSR);
-        let fHz = -1;
-        if (mp.freq > 0 && fy > 0) {
-          const dm = Math.abs((69 + 12 * Math.log2(mp.freq / 440)) - (69 + 12 * Math.log2(fy / 440)));
-          fHz = (dm <= 1) ? (mp.clarity >= 0.9 ? mp.freq : fy) : (mp.clarity >= 0.92 ? mp.freq : fy);
-        } else fHz = mp.freq > 0 ? mp.freq : fy;
-        if (fHz > 0) s.midi = finalize(69 + 12 * Math.log2(fHz / 440));
-      }
-    }
-    // 5) 옥타브 튐 완화 (전체 중앙값에서 9반음 이상 떨어진 것만 되돌림)
-    {
-      const allM = segs.map(s => s.midi).slice().sort((a, b) => a - b);
-      const gmed = allM[allM.length >> 1];
-      for (const s of segs) {
-        if (s.midi - gmed >= 9 && s.midi - 12 >= 24) s.midi -= 12;
-        else if (gmed - s.midi >= 9 && s.midi + 12 <= 107) s.midi += 12;
-      }
-    }
-    // 6) 어택 백트래킹: 시작 시각을 '바로 앞 에너지 골' 로 되돌려 실제 부른 순간에 맞춘다
-    const Wf = Math.max(16, Math.round(0.008 * dsSR));
-    const hf = Math.max(8, Math.round(0.001 * dsSR));
-    const rmsAt = (pos) => {
-      let e2 = 0, c = 0; const end = Math.min(sig.length, pos + Wf);
-      for (let x = Math.max(0, pos); x < end; x++) { e2 += sig[x] * sig[x]; c++; }
-      return c ? Math.sqrt(e2 / c) : 0;
-    };
-    const out = [];
-    for (let si = 0; si < segs.length; si++) {
-      const s = segs[si];
-      const centerS = Math.min(s.startF * H, sig.length - 1);
-      const prevEndS = si > 0 ? segs[si - 1].endF * H : 0;
-      const lowS = Math.max(0, prevEndS, centerS - Math.round(0.12 * dsSR));
-      let pk = 0; const e2 = Math.min(sig.length, centerS + Math.round(0.06 * dsSR));
-      for (let p = centerS; p < e2; p += hf) pk = Math.max(pk, rmsAt(p));
-      let valley = Infinity; for (let p = lowS; p <= centerS; p += hf) valley = Math.min(valley, rmsAt(p));
-      const thr = valley + 0.15 * (pk - valley);
-      let p = centerS; for (; p > lowS; p -= hf) { if (rmsAt(p) < thr) break; }
-      const startSample = Math.max(lowS, p);
-      out.push({ t0: startSample / dsSR, t1: s.endF * frameSec, midi: s.midi });
-    }
-    // 시작 시각이 겹치면 앞 음을 잘라 준다
+  // ── 공용 분절 결과(프레임/샘플 단위) → 초 단위 [{t0,t1,midi}] ──
+  //  humSegments 가 이미 어택 백트래킹까지 끝냈으므로 여기서는 단위만 바꾼다.
+  //  작곡 탭은 같은 결과를 '박(beat)'으로 바꿔 바로 그리드에 놓고,
+  //  허밍 탭은 '초'로 들고 있다가 빠르기·박자 옵션에 맞춰 몇 번이든 다시 굽는다.
+  #humToSeconds(segs, frameSec, dsSR) {
+    if (!segs || !segs.length) return [];
+    const out = segs.map(s => ({
+      t0: (s.startSample != null ? s.startSample / dsSR : s.startF * frameSec),
+      t1: s.endF * frameSec,
+      midi: s.midi,
+    }));
+    // 백트래킹으로 앞 음 꼬리와 겹치면 앞 음을 잘라 준다
     for (let k = 0; k < out.length - 1; k++) if (out[k].t1 > out[k + 1].t0) out[k].t1 = out[k + 1].t0;
     return out.filter(s => s.t1 - s.t0 >= 0.05);
   }
