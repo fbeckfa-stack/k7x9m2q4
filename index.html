@@ -2172,6 +2172,13 @@ body.tab-compose .page.compose .ctrl-bar .layer-step{justify-content:center;widt
       <div class="hum-card">
         <div class="hum-card-t">② 멜로디로 옮기기</div>
         <div class="hum-opt">
+          <span class="hum-opt-l">인식 엔진</span>
+          <div class="hum-seg" id="humEngSeg">
+            <button data-e="base" class="active" title="이 앱에 들어 있는 검출기(MPM+YIN+pYIN/Viterbi). 인터넷 없이 동작합니다">기본(내장)</button>
+            <button data-e="bp" title="Spotify Basic Pitch 신경망. 처음 한 번 인터넷으로 모델을 내려받습니다">Basic Pitch</button>
+          </div>
+        </div>
+        <div class="hum-opt">
           <span class="hum-opt-l">빠르기</span>
           <div class="hum-bpm">
             <button class="hum-mini" id="humBpmDown">−</button>
@@ -2188,7 +2195,7 @@ body.tab-compose .page.compose .ctrl-bar .layer-step{justify-content:center;widt
             <button data-q="0.25">1/16</button>
           </div>
         </div>
-        <div class="hum-opt">
+        <div class="hum-opt" id="humPrecRow">
           <span class="hum-opt-l">정밀 분석</span>
           <div class="hum-seg" id="humPrecSeg">
             <button data-p="0" class="active">보통</button>
@@ -2233,7 +2240,7 @@ body.tab-compose .page.compose .ctrl-bar .layer-step{justify-content:center;widt
         <button class="hum-btn prim" id="humSendBtn">작곡 탭으로 보내기 →</button>
       </div>
 
-      <div class="hum-hint">코를 막지 말고 「음~」 또는 「따-따-따」처럼 또렷하게 불러 주세요. 음과 음 사이를 살짝 끊어 주면 나눠지는 자리가 정확해집니다. 변환한 뒤에도 빠르기·박자·옥타브를 바꾸면 녹음을 다시 분석하지 않고 곧바로 다시 만들어 줘요. 결과가 마음에 들면 [작곡 탭으로 보내기] 를 누르세요.</div>
+      <div class="hum-hint">코를 막지 말고 「음~」 또는 「따-따-따」처럼 또렷하게 불러 주세요. 인식 엔진은 <b>음정·나누는 자리</b>만 담당하고, 빠르기·박자 맞추기·조 맞춤은 두 엔진 모두 같은 방식으로 처리해요. 음과 음 사이를 살짝 끊어 주면 나눠지는 자리가 정확해집니다. 변환한 뒤에도 빠르기·박자·옥타브를 바꾸면 녹음을 다시 분석하지 않고 곧바로 다시 만들어 줘요. 결과가 마음에 들면 [작곡 탭으로 보내기] 를 누르세요.</div>
     </div>
   </div>
 
@@ -13920,6 +13927,7 @@ class App {
       notes: null,        // 최종 멜로디 [{midi, beat, len}]
       bpm: Math.round(this.store.bpm) || 120,
       quant: 0,           // 0 = 그대로, 0.5 = 1/8, 0.25 = 1/16 (박 단위)
+      engine: 'base',     // 'base' = 내장 검출기, 'bp' = Basic Pitch (음정+분절만 대체)
       precise: 0,         // 0 = 보통, 1 = 정밀(저속 재생 보정) — 분석 시 창을 넓히고 hop을 촘촘히 함
       oct: 0,
       scaleFix: 0,
@@ -13932,6 +13940,7 @@ class App {
       recBtn: $('humRecBtn'), time: $('humTime'), sub: $('humRecSub'), level: $('humLevel'),
       wave: $('humWave'), playBtn: $('humPlayBtn'), clearBtn: $('humClearBtn'),
       bpmVal: $('humBpmVal'), bpmUp: $('humBpmUp'), bpmDown: $('humBpmDown'), bpmAuto: $('humBpmAuto'),
+      engSeg: $('humEngSeg'), precRow: $('humPrecRow'),
       quantSeg: $('humQuantSeg'), precSeg: $('humPrecSeg'), octSeg: $('humOctSeg'), scaleSeg: $('humScaleSeg'),
       goBtn: $('humGoBtn'), prog: $('humProg'), progFill: $('humProgFill'),
       card: $('humResultCard'), info: $('humResultInfo'), roll: $('humRoll'),
@@ -13965,6 +13974,18 @@ class App {
     wireSeg(e.quantSeg, 'q', 'quant', v => parseFloat(v));
     wireSeg(e.octSeg, 'o', 'oct', v => parseInt(v));
     wireSeg(e.scaleSeg, 's', 'scaleFix', v => parseInt(v));
+    // 인식 엔진 전환: 분석 자체가 달라지므로 재분석이 필요하다(격자·옥타브·조는 그대로 유지)
+    e.engSeg?.addEventListener('click', (ev) => {
+      const b = ev.target.closest('button'); if (!b) return;
+      e.engSeg.querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
+      d.engine = b.dataset.e;
+      const isBP = d.engine === 'bp';
+      if (e.precRow) { e.precRow.style.opacity = isBP ? '0.35' : ''; e.precRow.style.pointerEvents = isBP ? 'none' : ''; }
+      if (isBP) e.sub.textContent = 'Basic Pitch — 처음 한 번만 인터넷으로 모델을 받아요';
+      else e.sub.textContent = '기본(내장) 엔진 — 인터넷 없이 동작해요';
+      if (d.segs) e.sub.textContent += ' · [멜로디로 변환] 을 다시 누르세요';
+    });
+
     // 정밀 분석 토글: 창/hop 자체가 바뀌므로 자동 재빌드 대신 재분석이 필요함을 안내한다
     e.precSeg?.addEventListener('click', (ev) => {
       const b = ev.target.closest('button'); if (!b) return;
@@ -14236,9 +14257,163 @@ class App {
   //  정밀 모드(precise=1): 다운샘플을 덜 하고(음정 해상도↑) 분석창을 2배로 넓히며 hop을 절반으로
   //  좁힌다. 창 안에 더 많은 파형 주기가 들어가는 효과라 '느리게 재생해서 분석하는 것'과 원리가
   //  같다 — 실제로 오디오를 늘리지 않고도 같은 이득을 얻는다(재생 시간은 그대로, 계산량만 늘어남).
+  // ══════════════════════════════════════════════════════════════
+  //  Basic Pitch (Spotify, 2022) 엔진
+  //  ──────────────────────────────────────────────────────────────
+  //  오디오 → (피치 + 온셋 + 노트분절) 을 신경망 하나가 통째로 한다.
+  //  내장 엔진의 '프레임 피치 → 분절 → 확정' 3단계를 대체하지만,
+  //  빠르기(BPM) 추정과 박자 맞추기·조 맞춤은 하지 않는다 →
+  //  결과를 같은 모양의 세그먼트 [{t0,t1,midi}] 로 돌려주고
+  //  그 뒤(#humGuessBpm → #humBuild)는 내장 경로를 그대로 탄다.
+  //
+  //  모델은 앱에 넣지 않고 처음 쓸 때 한 번만 CDN 에서 받는다(수 MB).
+  //  받고 나면 브라우저 캐시에 남아 다음부터는 오프라인으로도 돈다.
+  //  실패하면 조용히 내장 엔진으로 되돌린다.
+  // ══════════════════════════════════════════════════════════════
+  async #humLoadBasicPitch(onProg) {
+    if (this._bp) return this._bp;
+    if (this._bpLoading) return this._bpLoading;
+    const ESM = [
+      'https://esm.sh/@spotify/basic-pitch@1.0.1',
+      'https://cdn.jsdelivr.net/npm/@spotify/basic-pitch@1.0.1/+esm',
+    ];
+    const MODELS = [
+      'https://cdn.jsdelivr.net/npm/@spotify/basic-pitch@1.0.1/model/model.json',
+      'https://unpkg.com/@spotify/basic-pitch@1.0.1/model/model.json',
+    ];
+    this._bpLoading = (async () => {
+      let mod = null, lastErr = null;
+      for (const url of ESM) {
+        try { onProg?.('모델 코드 받는 중…'); mod = await import(/* webpackIgnore: true */ url); break; }
+        catch (err) { lastErr = err; }
+      }
+      if (!mod?.BasicPitch) throw (lastErr || new Error('Basic Pitch 모듈을 불러오지 못했어요'));
+      let inst = null; lastErr = null;
+      for (const m of MODELS) {
+        try {
+          onProg?.('모델 가중치 받는 중…');
+          const bp = new mod.BasicPitch(m);
+          // evaluateModel 첫 호출 때 실제로 로드되므로, 여기서는 생성만 하고 통과시킨다
+          inst = bp; break;
+        } catch (err) { lastErr = err; }
+      }
+      if (!inst) throw (lastErr || new Error('Basic Pitch 모델을 불러오지 못했어요'));
+      this._bp = { mod, bp: inst };
+      return this._bp;
+    })();
+    try { return await this._bpLoading; }
+    finally { this._bpLoading = null; }
+  }
+
+  // 녹음을 22.05kHz 모노로 리샘플 — Basic Pitch 가 요구하는 입력 규격
+  async #humResample22k(buf, sr) {
+    const TARGET = 22050;
+    if (Math.abs(sr - TARGET) < 1) {
+      const ac = new OfflineAudioContext(1, buf.length, TARGET);
+      const ab = ac.createBuffer(1, buf.length, TARGET);
+      ab.copyToChannel(buf, 0);
+      return ab;
+    }
+    const len = Math.max(1, Math.round(buf.length * TARGET / sr));
+    const oc = new OfflineAudioContext(1, len, TARGET);
+    const src = oc.createBufferSource();
+    const inBuf = new OfflineAudioContext(1, buf.length, sr).createBuffer(1, buf.length, sr);
+    inBuf.copyToChannel(buf, 0);
+    src.buffer = inBuf;
+    src.connect(oc.destination);
+    src.start();
+    return await oc.startRendering();
+  }
+
+  async #humAnalyzeBP() {
+    const d = this._hum;
+    const e = d.el;
+    const setSub = (t) => { e.sub.textContent = t; };
+    e.prog.classList.add('on');
+    e.progFill.style.width = '0%';
+    e.goBtn.disabled = true;
+    e.goBtn.textContent = 'Basic Pitch 분석 중…';
+    try {
+      const { mod, bp } = await this.#humLoadBasicPitch(setSub);
+      setSub('오디오 준비 중…');
+      const ab = await this.#humResample22k(d.buf, d.sr);
+
+      const frames = [], onsets = [], contours = [];
+      await bp.evaluateModel(
+        ab,
+        (f, o, c) => { frames.push(...f); onsets.push(...o); contours.push(...c); },
+        (p) => { e.progFill.style.width = Math.round((p || 0) * 100) + '%'; },
+      );
+      setSub('노트로 옮기는 중…');
+
+      // 허밍은 어택이 흐려서 온셋 문턱을 조금 낮추고, 최소 음 길이를 넉넉히 잡아
+      // 한 음이 잘게 쪼개지는 것을 막는다. (프레임 hop ≈ 11.6ms → 11프레임 ≈ 128ms)
+      const poly = mod.outputToNotesPoly(
+        frames, onsets,
+        0.35,    // onsetThreshold — 낮출수록 음을 더 많이 끊어 잡음
+        0.30,    // frameThreshold — 낮출수록 여린 소리도 살림
+        11,      // minNoteLength(프레임)
+        true,    // inferOnsets
+        null, null,
+        true,    // melodiaTrick — 끊긴 음을 이어붙임
+      );
+      const raw = mod.noteFramesToTime(
+        mod.addPitchBendsToNoteEvents ? mod.addPitchBendsToNoteEvents(contours, poly) : poly
+      );
+
+      // ── 단선율화: 허밍은 한 번에 한 음이므로 겹치는 것 중 센 쪽만 남긴다 ──
+      //   (배음이 같이 잡히거나 옥타브가 튀는 경우를 여기서 걸러낸다)
+      const sorted = raw.slice().sort((a, b) => a.startTimeSeconds - b.startTimeSeconds);
+      const mono = [];
+      for (const n of sorted) {
+        const t0 = n.startTimeSeconds, t1 = t0 + n.durationSeconds;
+        const amp = n.amplitude ?? 1;
+        const prev = mono[mono.length - 1];
+        if (prev && t0 < prev.t1 - 0.02) {
+          const ov = Math.min(t1, prev.t1) - t0;
+          const shorter = Math.min(t1 - t0, prev.t1 - prev.t0);
+          if (ov > shorter * 0.5) {                       // 크게 겹침 → 하나만
+            if (amp > prev.amp) { prev.t0 = t0; prev.t1 = t1; prev.midi = n.pitchMidi; prev.amp = amp; }
+            continue;
+          }
+          prev.t1 = t0;                                   // 살짝 겹침 → 앞 음을 잘라 이어붙임
+        }
+        mono.push({ t0, t1, midi: n.pitchMidi, amp });
+      }
+      const segs = mono
+        .filter(s => s.t1 - s.t0 >= 0.05)
+        .map(s => ({ t0: s.t0, t1: s.t1, midi: s.midi }));
+
+      e.prog.classList.remove('on');
+      e.goBtn.disabled = false;
+      e.goBtn.textContent = '다시 변환';
+      if (!segs.length) {
+        setSub('음을 찾지 못했어요 — 조금 더 크고 또렷하게 불러 주세요');
+        e.card.hidden = true;
+        return;
+      }
+      d.segs = segs;
+      setSub(`Basic Pitch 로 ${segs.length}음을 찾았어요`);
+      d.autoBpm = this.#humGuessBpm(d.segs);              // 빠르기 추정은 내장 로직 그대로
+      if (!d.bpmTouched && d.autoBpm) this.#humSetBpm(d.autoBpm, true);
+      this.#humBuild();                                    // 박자 맞추기·옥타브·조 맞춤도 내장 그대로
+    } catch (err) {
+      console.warn('[basic-pitch]', err);
+      e.prog.classList.remove('on');
+      e.goBtn.disabled = false;
+      e.goBtn.textContent = '멜로디로 변환';
+      setSub('Basic Pitch 를 불러오지 못했어요 — 기본 엔진으로 변환합니다');
+      d.engine = 'base';
+      e.engSeg?.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.e === 'base'));
+      if (e.precRow) e.precRow.style.opacity = '';
+      this.#humAnalyze();
+    }
+  }
+
   #humAnalyze() {
     const d = this._hum;
     if (!d.buf || d.recording) return;
+    if (d.engine === 'bp') { this.#humStopPlay(); this.#humAnalyzeBP(); return; }
     this.#humStopPlay();
     const sr = d.sr, raw = d.buf;
     const precise = !!d.precise;
