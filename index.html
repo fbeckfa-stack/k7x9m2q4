@@ -186,7 +186,7 @@ body.tab-compose .topbar{display:none;}
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:0.01em;}
 .step-tuner.pitch-edit .step-tuner-tgt{display:block;}
 .step-tuner.pitch-edit{border-color:rgba(255,209,102,0.55);}
-/* 녹음 중: 테두리와 시간 표시를 빨갛게 */
+/* 듣는 중: 테두리와 표시를 빨갛게 */
 .step-tuner.rec{border-color:rgba(255,90,90,0.6);}
 .step-tuner.rec .step-tuner-note{color:#ff6b6b;}
 /* 녹음 중에는 바가 '목소리 크기', 분석 중에는 '진행률'을 나타낸다 → 바늘 대신 왼쪽부터 채운다 */
@@ -194,7 +194,7 @@ body.tab-compose .topbar{display:none;}
 .step-tuner.fill .step-tuner-needle{transform:none;left:0;top:0;height:4px;width:0;
   border-radius:2px;box-shadow:none;transition:width 0.08s linear;}
 .step-tuner.rec.fill .step-tuner-needle{background:#ff6b6b;}
-.step-tuner.busy.fill .step-tuner-needle{background:#4ade80;}
+.step-tuner.fill .step-tuner-needle{background:#ff6b6b;}
 .icon-btn.rec{color:#ff6b6b;}
 /* 음정 편차 바: 가운데가 정확, 좌우로 벗어나면 바늘이 밀린다 */
 .step-tuner-bar{position:relative;height:4px;margin-top:7px;border-radius:2px;
@@ -264,6 +264,14 @@ body.tab-compose .len-handle{margin-top:var(--strip-h,30px);}
 .key-row.black-r{background:#0a0a0a;color:transparent;border-bottom:1px solid #000;}
 .key-row.c-mark{color:var(--acc) !important;font-weight:700;}
 .key-row.playing{background:var(--acc) !important;color:var(--acc-fg) !important;}
+/* 라이트 모드: 그리드(캔버스)만 밝아지고 왼쪽 건반 열이 검게 남던 문제 —
+   건반 열도 같이 밝힌다. 검은건은 완전 검정 대신 짙은 회색으로 낮춘다. */
+body.light .piano-col{background:#ffffff;border-right:1px solid #e6e8ea;}
+body.light .key-row.white-r{background:#ffffff;color:#9aa0a6;border-bottom:1px solid #e6e8ea;}
+body.light .key-row.black-r{background:#3a3f45;border-bottom:1px solid #2a2e33;}
+/* 다크 모드에서 흰건 위의 'C' 글자가 흰색(--acc)이라 안 보이던 것도 함께 고친다 */
+.key-row.white-r.c-mark{color:#111 !important;}
+body.light .key-row.white-r.c-mark{color:#111 !important;}
 
 .grid-wrap{position:relative;flex:1;}
 #gridCanvas{display:block;}
@@ -338,6 +346,15 @@ body.light .kb-keys.pad::after{background:#e6f0ea;color:rgba(0,0,0,0.4);}
 .bar-chord-strip{position:relative;height:var(--strip-h);display:flex;background:#0c0c0c;border-bottom:1px solid #262626;
   z-index:30;will-change:transform;}
 body.light .bar-chord-strip{background:#ffffff;border-bottom:1px solid #e6e8ea;}
+/* ── 라이트 모드: 작곡 탭에 떠 있는 패널·버튼들 ── */
+body.light .step-tuner{background:rgba(255,255,255,0.96);box-shadow:0 6px 22px rgba(0,0,0,0.14);}
+body.light .step-tuner-note{color:#111;}
+body.light .step-strip{background:rgba(255,255,255,0.96);box-shadow:0 6px 22px rgba(0,0,0,0.14);}
+body.light .step-fab.no{background:#eceef1;color:#111;box-shadow:0 3px 12px rgba(0,0,0,0.18);}
+body.light .anchor-bar{background:rgba(255,255,255,0.96);box-shadow:0 6px 22px rgba(0,0,0,0.14);}
+body.light .ms-side-btn{color:#111;}
+body.light .fx-btn{border:1px solid #d8dbdf;}
+body.light .step-tap{background:rgba(255,255,255,0.92);}
 body:not(.tab-compose) .bar-chord-strip{display:none;}
 /* 기준점 확정 바 */
 .anchor-bar{position:fixed;left:50%;transform:translateX(-50%);bottom:104px;z-index:190;
@@ -2145,9 +2162,9 @@ body.tab-compose .page.compose .ctrl-bar .layer-step{justify-content:center;widt
             <path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
           </svg>
         </button>
-        <button class="icon-btn mic-wide" id="stepTunerBtn" title="허밍 녹음 — 먼저 녹음해 두고, 멈추면 녹음본을 분석해 음정을 찾는다 (허밍 탭과 같은 방식)">
+        <button class="icon-btn mic-wide" id="stepTunerBtn" title="허밍 입력 — 켜 두면 계속 듣다가, 허밍 한 번이 끝날 때마다 허밍 탭과 같은 분석기로 음정을 찾아 바로 노트를 만든다">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M4 21h16"/><path d="M8 21v-2M12 21v-3M16 21v-2"/></svg>
-          <span class="mic-lbl" id="stepTunerBtnLbl">허밍 녹음</span>
+          <span class="mic-lbl" id="stepTunerBtnLbl">허밍 입력</span>
         </button>
       </div>
 
@@ -2320,7 +2337,7 @@ body.tab-compose .page.compose .ctrl-bar .layer-step{justify-content:center;widt
         <div class="step-tuner-read">
           <div class="step-tuner-tgt" id="stepTunerTgt"></div>
           <div class="step-tuner-note" id="stepTunerNote">—</div>
-          <div class="step-tuner-cents" id="stepTunerCents">● 를 눌러 녹음하세요</div>
+          <div class="step-tuner-cents" id="stepTunerCents">● 를 눌러 허밍을 켜세요</div>
           <div class="step-tuner-bar"><div class="step-tuner-needle" id="stepTunerNeedle"></div></div>
         </div>
         <div class="step-tuner-btns">
@@ -15368,7 +15385,8 @@ class App {
     this.bus.on('notes:changed', () => this.#pitchEditWatch());
     this.bus.on('notes:mutated', (info) => {
       // 노트를 새로 만든 직후 → 그 노트가 곧바로 허밍 대상이 된다
-      if (info && info.cause === 'add' && info.payload && info.payload.id) {
+      if (info && info.cause === 'add' && info.payload && info.payload.id
+          && !(this.pitchEdit && this.pitchEdit.creating)) {
         this.pitchEdit.target = info.payload.id;
         this.pitchEdit.lastSel = this.store.selectedNoteId;
         this.#stepRenderTuner();
@@ -15467,60 +15485,77 @@ class App {
     this._stepFlashT = setTimeout(() => t.classList.remove('show'), 1700);
   }
 
-  // 분석으로 찾은 음정들을 순서대로 입힌다.
-  //  대상 노트가 있으면 : 첫 음 → 대상, 다음 음 → 옆 노트 …
-  //  대상 노트가 없으면 : 아래 스트립에 쌓아 [그리드에 넣기] 로 새 노트를 만들게 한다
-  #stepApplySegs(segs) {
-    if (segs === null) { this.#stepFlash('녹음이 너무 짧아요 — 1초 이상 불러 주세요'); return; }
-    const midis = (segs || [])
-      .map(sg => Math.round(sg.midi))
-      .filter(v => Number.isFinite(v) && v >= 21 && v <= 108);
-    if (!midis.length) {
-      this.#stepFlash('음을 찾지 못했어요 — 조금 더 크고 또렷하게 불러 주세요');
-      return;
-    }
-
-    if (this.#pitchEditActive()) {
-      const moved = [];
-      for (const md of midis) {
-        if (!this.#pitchEditActive()) break;      // 옆 노트가 더 없으면 거기서 멈춘다
-        const r = this.#pitchEditApply(md, true); // true = 소리는 나중에 한 번에
-        if (r) moved.push(r);
-      }
-      if (!moved.length) { this.#stepFlash('옮길 노트가 없어요'); return; }
-      this.#stepPreview(moved);
-      const left = midis.length - moved.length;
-      this.#stepFlash(moved.length + '개 음정을 옮겼어요'
-        + (left > 0 ? ' (뒤 ' + left + '개는 옮길 노트가 없었어요)' : '')
-        + ' · ↩ 로 하나씩 취소');
-      return;
-    }
-
-    for (const md of midis) this.stepQueue.push({ row: midiToRow(md), midi: md });
-    this.#stepPreview(midis);
-    this.#stepFlash(midis.length + '개 음을 담았어요 · 노트를 고르고 녹음하면 그 노트가 옮겨져요');
-    this.#stepRenderStrip();
+  // 허밍 한 번 → 노트 하나. 고른(또는 방금 만든) 노트가 있으면 그 노트의 음정을 바꾸고,
+  // 없으면 그리드에 새 노트를 만든다. 그래서 계속 허밍하면 노트가 계속 생긴다.
+  #stepHumOne(midi) {
+    if (!(midi >= 21 && midi <= 108)) return false;
+    const done = this.#pitchEditActive() ? this.#pitchEditApply(midi) : this.#pitchEditCreate(midi);
+    if (!done) return false;
+    this._stepLastMidi = midi;
+    this.#stepRenderTuner();
+    return true;
   }
 
-  // 방금 입힌 음들을 짧게 이어 들려준다 (최대 12음)
-  #stepPreview(midis) {
-    const list = midis.slice(0, 12);
-    list.forEach((md, i) => {
-      setTimeout(() => {
-        try {
-          this.audio.triggerNow({
-            instrument: this.store.currentInstrument, midi: md, duration: 0.3, velocity: 0.85,
-          });
-        } catch (_) {}
-      }, i * 170);
-    });
-    try { if (navigator.vibrate) navigator.vibrate(14); } catch (_) {}
+  // 새 노트를 놓을 자리: 지금 레이어에서 마지막 노트 뒤, 없으면 시작선
+  #stepWriteBeat(layer) {
+    const arr = this.store.notes.filter(n => n.layer === layer);
+    if (!arr.length) return Math.max(0, this.store.startBeat || 0);
+    return arr.reduce((mx, n) => Math.max(mx, n.beat + (n.len || 1)), 0);
+  }
+
+  // 대상 노트가 없을 때: 허밍한 음으로 새 노트를 만든다
+  #pitchEditCreate(midi) {
+    const pe = this.pitchEdit;
+    if (!pe || this.store.multiMode) return false;
+    const layer = this.store.currentLayer;
+    let beat = this.#stepWriteBeat(layer);
+    this.#ensureTotalBeats(beat + 2);
+    if (beat >= TIMING.TOTAL_BEATS) return false;
+
+    const bar = barOfBeat(beat);
+    let row = nearestVisibleRow(this.viewport, midiToRow(midi), bar);
+    if (!rowAllowedIn(this.store.barChords, row, beat)) {
+      let found = null;
+      for (let d = 1; d < NOTE_ROWS.length && found == null; d++) {
+        for (const r of [row - d, row + d]) {
+          if (r < 0 || r >= NOTE_ROWS.length) continue;
+          if (rowAllowedIn(this.store.barChords, r, beat) && rowVisible(this.viewport, r, bar)) { found = r; break; }
+        }
+      }
+      if (found != null) row = found;
+    }
+
+    // 우리가 만든 노트는 '다음 허밍의 대상'이 되면 안 된다.
+    // (대상이 되면 다음 허밍이 새 노트를 만드는 대신 이 노트를 옮겨 버린다)
+    pe.creating = true;
+    let id = null;
+    try {
+      id = this.store.addNote({
+        row, beat, len: Math.min(1, TIMING.TOTAL_BEATS - beat),
+        inst: this.store.currentInstrument, velocity: 0.8, layer,
+      });
+    } finally { pe.creating = false; }
+    if (!id) return false;
+
+    pe.stack.push({ kind: 'add', id });
+    if (pe.stack.length > 200) pe.stack.shift();
+    pe.target = null;
+    pe.lastSel = this.store.selectedNoteId;
+
+    const nt = this.store.notes.find(n => n.id === id);
+    if (nt) this.#pitchEditReveal(nt);
+    try {
+      this.audio.triggerNow({
+        instrument: this.store.currentInstrument, midi: rowToMidi(row), duration: 0.4, velocity: 0.9,
+      });
+    } catch (_) {}
+    try { if (navigator.vibrate) navigator.vibrate(12); } catch (_) {}
+    this.store.pingRender?.();
+    return true;
   }
 
   // 대상 노트를 이 음높이로 옮기고, 대상을 옆 노트로 넘긴다.
-  //  quiet=true 면 소리는 내지 않는다(여러 음을 한꺼번에 입힐 때 나중에 모아서 들려준다).
-  //  실제로 옮겨졌으면 '옮긴 음(midi)'을, 아니면 false 를 돌려준다.
-  #pitchEditApply(midi, quiet = false) {
+  #pitchEditApply(midi) {
     const pe = this.pitchEdit;
     if (!pe || !pe.target) return false;
     if (!(midi >= 21 && midi <= 108)) return false;
@@ -15545,21 +15580,19 @@ class App {
     const fromRow = note.row;
     // 되돌리기(↩) 버튼의 활성 상태가 notes:changed 에서 이 stack 을 보고 갱신되므로
     // updateNote 보다 '먼저' 쌓아 둔다.
-    pe.stack.push({ id: note.id, fromRow, toRow: row });
+    pe.stack.push({ kind: 'move', id: note.id, fromRow, toRow: row });
     if (pe.stack.length > 200) pe.stack.shift();
     this.store.updateNote(note.id, { row });
 
-    if (!quiet) {
-      try {
-        this.audio.triggerNow({
-          instrument: note.inst || this.store.currentInstrument,
-          midi: rowToMidi(row), duration: 0.4, velocity: 0.9,
-        });
-      } catch (_) {}
-      try { if (navigator.vibrate) navigator.vibrate(12); } catch (_) {}
-    }
+    try {
+      this.audio.triggerNow({
+        instrument: note.inst || this.store.currentInstrument,
+        midi: rowToMidi(row), duration: 0.4, velocity: 0.9,
+      });
+    } catch (_) {}
+    try { if (navigator.vibrate) navigator.vibrate(12); } catch (_) {}
 
-    // 옆(다음) 노트로 넘어간다 — 없으면 여기서 멈춘다
+    // 옆(다음) 노트로 넘어간다 — 더 없으면 대상을 놓는다(다음 허밍부터는 새 노트가 생긴다)
     const cur = this.store.notes.find(n => n.id === note.id) || note;
     const nxt = this.#pitchEditNext(cur);
     if (nxt) {
@@ -15569,13 +15602,12 @@ class App {
       pe.target = null;
       pe.lastSel = this.store.selectedNoteId;
       this.#pitchEditReveal(cur);
-      if (!quiet) this.#stepFlash('마지막 음이에요 · 새 노트를 만들거나 다른 노트를 고르세요');
     }
     this.#stepRenderTuner();
-    return rowToMidi(row);
+    return true;
   }
 
-  // ↶ : 방금 허밍으로 옮긴 음정 하나를 되돌리고, 대상을 그 노트로 되돌린다
+  // ↶ : 방금 허밍으로 한 일 하나를 되돌린다 (음정 이동이면 원래 음으로, 새 노트면 그 노트를 지운다)
   #pitchEditUndo() {
     const pe = this.pitchEdit;
     if (!pe || !pe.stack.length) return false;
@@ -15585,6 +15617,18 @@ class App {
       if (this.store.notes.some(n => n.id === e.id)) { ent = e; break; }
     }
     if (!ent) return false;
+
+    if (ent.kind === 'add') {
+      // 허밍으로 만든 노트를 지운다 (히스토리를 더럽히지 않는 취소 경로)
+      this.store.cancelLastAdd(ent.id);
+      pe.target = null;
+      pe.lastSel = this.store.selectedNoteId;
+      try { if (navigator.vibrate) navigator.vibrate(16); } catch (_) {}
+      this.#stepFlash('방금 만든 노트를 지웠어요 · 다시 허밍하면 새로 만들어져요');
+      this.store.pingRender?.();
+      this.#stepRenderTuner();
+      return true;
+    }
 
     this.store.updateNote(ent.id, { row: ent.fromRow });
     // 되돌린 노트를 다시 대상으로 → 다시 허밍하면 그 노트가 새로 부른 음으로 옮겨진다
@@ -15601,7 +15645,7 @@ class App {
       } catch (_) {}
     }
     try { if (navigator.vibrate) navigator.vibrate(16); } catch (_) {}
-    this.#stepFlash('음정 이동을 취소했어요 · 다시 녹음하면 이 노트부터 옮겨집니다');
+    this.#stepFlash('음정 이동을 취소했어요 · 다시 허밍하면 이 노트가 옮겨집니다');
     this.#stepRenderTuner();
     return true;
   }
@@ -15627,13 +15671,10 @@ class App {
       this.dom.stepCollectLbl.style.color = on ? 'var(--acc)' : '';
       this.dom.stepCollectLbl.textContent = on ? '녹음 중' : 'MELODY';
     }
-    const busy = !!(this.stepMic && this.stepMic.analyzing);
     this.dom.stepTunerBtn?.classList.toggle('on', on);
-    this.dom.stepTunerBtn?.classList.toggle('rec', on && !busy);
+    this.dom.stepTunerBtn?.classList.toggle('rec', on);
     this.dom.stepTunerBtn?.setAttribute('aria-pressed', on ? 'true' : 'false');
-    if (this.dom.stepTunerBtnLbl) {
-      this.dom.stepTunerBtnLbl.textContent = busy ? '분석 중' : (on ? '녹음 중' : '허밍 녹음');
-    }
+    if (this.dom.stepTunerBtnLbl) this.dom.stepTunerBtnLbl.textContent = on ? '듣는 중' : '허밍 입력';
     // 패널은 body 직속(fixed)이라 탭을 옮기면 다른 탭 위에 떠 버린다 → 작곡 탭에서만 보인다.
     // (마이크 자체는 끄지 않는다. 작곡 탭으로 돌아오면 그대로 이어진다)
     this.dom.stepTuner?.classList.toggle('on', on && !this.stepTapSt && this.#stepOnComposeTab());
@@ -15649,17 +15690,18 @@ class App {
   }
   #stepOct(midi) { return Math.floor(midi / 12) - 1; }
 
-  // ── 녹음 시작 / 정지 (녹음 버튼 = 이 버튼만 상태를 바꾼다) ──
+  // ── 녹음(듣기) 시작 / 정지 — 이 버튼만 상태를 바꾼다 ──
+  //  켜 두면 계속 듣고 있다가, 허밍 한 번이 끝날 때마다(소리가 잠깐 끊길 때마다)
+  //  그 구간만 잘라 허밍 탭과 '똑같은' 분석기(#humAnalyzeBuffer)에 넘겨 곧바로 노트로 만든다.
+  //  → 작곡 탭에는 따로 음정을 찾는 코드가 없다. 검출은 전부 허밍 탭 코드가 한다.
   async #stepMicToggle() {
-    const m = this.stepMic;
-    if (m && m.analyzing) return;              // 분석 중엔 무시
-    if (m) { this.#stepRecStop(); return; }    // 녹음 중 → 정지 후 분석
+    if (this.stepMic) { this.#stepRecStop(); return; }
     await this.#stepRecStart();
   }
 
   // force=true 일 때만 실제로 멈춘다.
   //  녹음 버튼을 다시 누르기 전에는 다른 어떤 동작(그리드에 넣기 · 박자 맞추기 · 탭 이동 등)으로도
-  //  녹음이 멈추지 않는다.
+  //  듣기가 멈추지 않는다.
   #stepMicStop(force = false) {
     if (!this.stepMic || !force) return;
     this.#stepRecStop();
@@ -15675,7 +15717,7 @@ class App {
     try { await ctx.resume(); } catch (_) {}
     let stream;
     try {
-      // 목소리 가공(에코제거/노이즈감소/자동볼륨)은 음정을 흐리므로 전부 끈다.
+      // 목소리 가공(에코제거/노이즈감소/자동볼륨)은 음정을 흐리므로 전부 끈다. (허밍 탭과 동일)
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
       });
@@ -15685,39 +15727,81 @@ class App {
     }
 
     const src = ctx.createMediaStreamSource(stream);
-    // ScriptProcessor: 구형 iOS 사파리까지 되는 가장 안전한 캡처 경로.
-    // 출력은 게인 0 으로 destination 에 물려야 노드가 살아 있는다(하울링 없음).
+    // ScriptProcessor: 구형 iOS 사파리까지 되는 가장 안전한 캡처 경로. (허밍 탭과 동일)
     const sp = ctx.createScriptProcessor(4096, 1, 1);
     const zero = ctx.createGain(); zero.gain.value = 0;
-    const MAXSEC = 60;
 
     const m = {
-      stream, src, sp, zero,
-      chunks: [], total: 0, sr: ctx.sampleRate,
+      stream, src, sp, zero, sr: ctx.sampleRate, ctx,
       t0: ctx.currentTime, sec: 0, rms: 0, raf: 0,
-      recording: true, analyzing: false, prog: 0,
+      listening: true,
+      // ── 허밍 '한 번'을 잘라내기 위한 상태 ──
+      floor: null,        // 잡음 바닥(적응형 게이트)
+      voiced: [],         // 지금 모으는 중인 소리 구간
+      voicedLen: 0,
+      silentLen: 0,
+      prev: null,         // 직전 블록 (어택을 놓치지 않게 앞에 붙인다)
+      active: false,
+      busy: false,        // 분석 중
+      queue: [],          // 분석 대기 구간
+      hums: 0,            // 지금까지 받은 허밍 수
     };
+
+    const MIN_VOICED = Math.round(m.sr * 0.16);   // 0.16초는 넘어야 한 음으로 본다
+    const END_SILENCE = Math.round(m.sr * 0.14);  // 0.14초 조용하면 그 음이 끝난 것
+    const MAX_SEG = Math.round(m.sr * 3.0);       // 너무 길게 끌면 그냥 끊는다
+
+    const closeSegment = () => {
+      if (!m.voicedLen) { m.voiced = []; m.active = false; m.silentLen = 0; return; }
+      if (m.voicedLen >= MIN_VOICED) {
+        const seg = new Float32Array(m.voiced.reduce((a, c) => a + c.length, 0));
+        let off = 0; for (const c of m.voiced) { seg.set(c, off); off += c.length; }
+        m.queue.push(seg);
+        this.#stepDrainQueue();
+      }
+      m.voiced = []; m.voicedLen = 0; m.silentLen = 0; m.active = false;
+    };
+
     sp.onaudioprocess = (ev) => {
-      if (!m.recording) return;
+      if (!m.listening) return;
       const ch = ev.inputBuffer.getChannelData(0);
-      m.chunks.push(new Float32Array(ch));
-      m.total += ch.length;
-      let e2 = 0; for (let i = 0; i < ch.length; i++) e2 += ch[i] * ch[i];
-      m.rms = Math.sqrt(e2 / ch.length);
-      if (m.total >= m.sr * MAXSEC) this.#stepRecStop();
+      const blk = new Float32Array(ch);           // 콜백 버퍼는 재사용되므로 반드시 복사
+      let e2 = 0; for (let i = 0; i < blk.length; i++) e2 += blk[i] * blk[i];
+      const rms = Math.sqrt(e2 / blk.length);
+      m.rms = rms;
+
+      // 잡음 바닥을 추적해 게이트를 환경에 맞춘다(조용한 폰/시끄러운 방 모두 대응)
+      if (m.floor == null) m.floor = rms;
+      else m.floor = (rms < m.floor) ? (m.floor * 0.7 + rms * 0.3) : (m.floor * 0.995 + rms * 0.005);
+      const gate = Math.max(0.004, m.floor * 4);
+
+      if (rms >= gate) {
+        if (!m.active) {
+          m.active = true;
+          if (m.prev) { m.voiced.push(m.prev); m.voicedLen += m.prev.length; }   // 어택 앞부분
+        }
+        m.voiced.push(blk); m.voicedLen += blk.length; m.silentLen = 0;
+        if (m.voicedLen >= MAX_SEG) closeSegment();
+      } else if (m.active) {
+        m.voiced.push(blk); m.silentLen += blk.length;
+        if (m.silentLen >= END_SILENCE) closeSegment();
+      }
+      m.prev = blk;
     };
+
     src.connect(sp); sp.connect(zero); zero.connect(ctx.destination);
     this.stepMic = m;
 
     this.pitchEdit ||= { target: null, stack: [], lastSel: this.store.selectedNoteId };
-    // 녹음을 시작할 때 이미 골라 둔 노트가 있으면 그게 첫 대상이 된다
+    // 듣기를 시작할 때 이미 골라 둔 노트가 있으면 그게 첫 대상이 된다
     if (!this.pitchEdit.target && this.store.selectedNoteId && !this.store.multiMode) {
       this.pitchEdit.target = this.store.selectedNoteId;
     }
     this.pitchEdit.lastSel = this.store.selectedNoteId;
+    this._stepLastMidi = null;
 
     const tick = () => {
-      if (!m.recording) return;
+      if (!m.listening) return;
       m.sec = ctx.currentTime - m.t0;
       this.#stepRenderTuner();
       m.raf = requestAnimationFrame(tick);
@@ -15727,46 +15811,52 @@ class App {
     this.#stepRefreshUI();
   }
 
-  // 정지 → 청크를 이어 붙여 오프라인 분석 → 찾은 음정을 노트에 입힌다
+  // 잘라낸 구간을 하나씩 허밍 탭 분석기에 넘긴다 (겹쳐 돌지 않게 한 번에 하나만)
+  #stepDrainQueue() {
+    const m = this.stepMic;
+    if (!m || m.busy || !m.queue.length) return;
+    const seg = m.queue.shift();
+    m.busy = true;
+    const done = (segs) => {
+      const mm = this.stepMic;
+      if (mm) { mm.busy = false; }
+      let made = 0;
+      for (const sg of (segs || [])) {
+        const md = Math.round(sg.midi);
+        if (this.#stepHumOne(md)) made++;
+      }
+      if (mm) { mm.hums += made; mm.lastMade = made; }
+      if (!made) this.#stepFlash('음을 못 알아들었어요 — 「음~」 하고 또렷하게 불러 주세요');
+      this.#stepRenderTuner();
+      try { this.bus.emit('notes:changed'); } catch (_) {}   // 되돌리기 버튼 상태 갱신
+      this.#stepDrainQueue();
+    };
+    try {
+      this.#humAnalyzeBuffer(seg, m.sr, { precise: false, onProg: () => {}, onDone: done });
+    } catch (err) {
+      console.warn('[step analyze]', err);
+      done([]);
+    }
+  }
+
   #stepRecStop() {
     const m = this.stepMic;
-    if (!m || !m.recording) return;
-    m.recording = false;
+    if (!m) return;
+    m.listening = false;
     cancelAnimationFrame(m.raf); m.raf = 0;
     try { m.src?.disconnect(); } catch (_) {}
     try { m.sp?.disconnect(); } catch (_) {}
     try { m.zero?.disconnect(); } catch (_) {}
     if (m.sp) m.sp.onaudioprocess = null;
     try { m.stream?.getTracks().forEach(t => t.stop()); } catch (_) {}
-    m.src = m.sp = m.zero = null; m.stream = null;
-
-    const buf = new Float32Array(m.total);
-    let off = 0; for (const c of (m.chunks || [])) { buf.set(c, off); off += c.length; }
-    m.chunks = null;
-    const dur = buf.length / m.sr;
-
-    const finish = (segs) => {
-      this.stepMic = null;
-      this.#stepApplySegs(segs);
-      this.#stepRefreshUI();
-      try { this.bus.emit('notes:changed'); } catch (_) {}   // 되돌리기 버튼 상태 갱신
-    };
-
-    if (dur < 0.4) { finish(null); return; }
-
-    m.analyzing = true;
-    m.prog = 0;
+    m.src = m.sp = m.zero = null; m.stream = null; m.voiced = []; m.queue = [];
+    this.stepMic = null;
+    // 허밍 세션이 끝났으므로 되돌리기 스택도 비운다
+    // (안 비우면 되돌리기 버튼이 계속 옛 허밍만 되돌려 일반 되돌리기에 닿지 못한다)
+    if (this.pitchEdit) { this.pitchEdit.stack = []; this.pitchEdit.target = null; }
+    this._stepLastMidi = null;
     this.#stepRefreshUI();
-    try {
-      this.#humAnalyzeBuffer(buf, m.sr, {
-        precise: false,
-        onProg: (p) => { m.prog = p; this.#stepRenderTuner(); },
-        onDone: (segs) => finish(segs),
-      });
-    } catch (err) {
-      console.warn('[step analyze]', err);
-      finish([]);
-    }
+    try { this.bus.emit('notes:changed'); } catch (_) {}
   }
 
   #stepRenderTuner() {
@@ -15775,8 +15865,7 @@ class App {
     const needle = this.dom.stepTunerNeedle, panel = this.dom.stepTuner;
     if (!panel) return;
     panel.classList.toggle('on', !!m && !this.stepTapSt && this.#stepOnComposeTab());
-    panel.classList.toggle('rec', !!m && !!m.recording);
-    panel.classList.toggle('busy', !!m && !!m.analyzing);
+    panel.classList.toggle('rec', !!m);
     panel.classList.toggle('fill', !!m);
     panel.classList.remove('hit');
 
@@ -15785,43 +15874,38 @@ class App {
       this.#stepRenderCollect();
     }
 
-    // 허밍으로 옮길 대상 노트 안내
+    // 지금 어떤 노트가 바뀌는지 / 새로 만들어지는지 안내
     const tgtEl = this.dom.stepTunerTgt;
     const peOn = this.#pitchEditActive();
-    panel.classList.toggle('pitch-edit', peOn);
+    panel.classList.toggle('pitch-edit', !!m);
     if (tgtEl) {
-      if (peOn) {
+      if (!m) {
+        tgtEl.textContent = '';
+      } else if (peOn) {
         const n = this.store.notes.find(x => x.id === this.pitchEdit.target);
         const md = n ? rowToMidi(n.row) : null;
-        tgtEl.textContent = '🎯 이 노트부터 옮깁니다 · 지금 '
+        tgtEl.textContent = '🎯 이 노트를 옮깁니다 · 지금 '
           + (md != null ? this.#stepNoteKo(md) + this.#stepOct(md) : '—')
           + (this.pitchEdit.stack.length ? '  (↶ 취소)' : '');
       } else {
-        tgtEl.textContent = '';
+        tgtEl.textContent = '✎ 허밍할 때마다 새 노트가 생깁니다'
+          + (this.pitchEdit && this.pitchEdit.stack.length ? '  (↶ 취소)' : '');
       }
     }
 
     if (!m) {
       if (noteEl) noteEl.textContent = '—';
-      if (centEl) centEl.textContent = '● 를 눌러 녹음하세요';
-      if (needle) { needle.style.width = '0%'; needle.style.left = '50%'; }
+      if (centEl) centEl.textContent = '● 를 눌러 허밍을 켜세요';
+      if (needle) needle.style.width = '0%';
       return;
     }
 
-    if (m.analyzing) {
-      const pct = Math.round((m.prog || 0) * 100);
-      if (noteEl) noteEl.textContent = '분석 중';
-      if (centEl) centEl.textContent = pct + '% — 녹음한 소리에서 음정을 찾는 중이에요';
-      if (needle) needle.style.width = Math.max(0, Math.min(100, pct)) + '%';
-      return;
-    }
-
-    // 녹음 중: 경과 시간 + 목소리 크기
-    if (noteEl) noteEl.textContent = (m.sec || 0).toFixed(1) + '초';
+    const last = this._stepLastMidi;
+    if (noteEl) noteEl.textContent = (last != null) ? (this.#stepNoteKo(last) + this.#stepOct(last)) : '듣는 중';
     if (centEl) {
-      centEl.textContent = peOn
-        ? '허밍하고 ● 를 다시 누르면 그 음정으로 옮겨져요'
-        : '허밍하고 ● 를 다시 누르면 음이 아래에 담겨요';
+      centEl.textContent = m.busy
+        ? '방금 부른 음을 옮기는 중…'
+        : (m.hums ? m.hums + '음 · 「음~」 하고 끊어서 불러 주세요' : '「음~」 하고 한 음씩 끊어서 불러 주세요');
     }
     const lv = Math.max(0, Math.min(1, (m.rms || 0) * 7));
     if (needle) needle.style.width = (lv * 100).toFixed(0) + '%';
@@ -15838,7 +15922,7 @@ class App {
     const strip = this.dom.stepStrip, list = this.dom.stepStripList;
     if (!strip || !list) return;
     const n = this.stepQueue.length;
-    strip.classList.toggle('on', (!!this.stepMic || n > 0) && !this.stepTapSt && this.#stepOnComposeTab());
+    strip.classList.toggle('on', n > 0 && !this.stepTapSt && this.#stepOnComposeTab());
     list.innerHTML = '';
     if (!n) {
       const e = document.createElement('div');
