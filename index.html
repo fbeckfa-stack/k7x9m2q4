@@ -213,6 +213,10 @@ body.tab-compose .topbar{display:none;}
   box-shadow:0 3px 12px rgba(0,0,0,0.55);transition:transform 0.1s;}
 .step-fab.ok{background:#1f8a4c;}
 .step-fab.no{background:rgba(58,58,58,0.94);font-size:19px;}
+.step-fab.x{background:rgba(58,58,58,0.94);font-size:17px;width:42px;height:42px;}
+/* 등록 대기 중인 음: 크게 초록으로 */
+.step-tuner.pending .step-tuner-note{color:#22C55E;}
+.step-tuner.pending{border-color:#22C55E;box-shadow:0 0 0 2px rgba(34,197,94,0.24),0 6px 22px rgba(0,0,0,0.55);}
 .step-fab:active{transform:scale(0.9);}
 .step-fab[disabled]{opacity:0.32;pointer-events:none;}
 
@@ -356,6 +360,7 @@ body.light .step-tuner{background:rgba(255,255,255,0.96);box-shadow:0 6px 22px r
 body.light .step-tuner-note{color:#111;}
 body.light .step-strip{background:rgba(255,255,255,0.96);box-shadow:0 6px 22px rgba(0,0,0,0.14);}
 body.light .step-fab.no{background:#eceef1;color:#111;box-shadow:0 3px 12px rgba(0,0,0,0.18);}
+body.light .step-fab.x{background:#eceef1;color:#111;box-shadow:0 3px 12px rgba(0,0,0,0.18);}
 body.light .anchor-bar{background:rgba(255,255,255,0.96);box-shadow:0 6px 22px rgba(0,0,0,0.14);}
 body.light .ms-side-btn{color:#111;}
 body.light .fx-btn{border:1px solid #d8dbdf;}
@@ -2346,14 +2351,15 @@ body.tab-compose .page.compose .ctrl-bar .layer-step{justify-content:center;widt
           <div class="step-tuner-bar"><div class="step-tuner-needle" id="stepTunerNeedle"></div></div>
         </div>
         <div class="step-tuner-btns">
-          <button class="step-fab no" id="stepNo" aria-label="마지막 임시 음 물리기">↶</button>
-          <button class="step-fab ok" id="stepOk" aria-label="이 음 저장">✓</button>
+          <button class="step-fab x" id="stepClose" aria-label="허밍 끄기">✕</button>
+          <button class="step-fab no" id="stepNo" aria-label="되돌리기">↶</button>
+          <button class="step-fab ok" id="stepOk" aria-label="이 음 등록">✓</button>
         </div>
       </div>
       <!-- 시간 순으로 쌓인 음높이 목록 (칩을 누르면 그 음만 삭제) -->
       <div class="step-strip" id="stepStrip">
         <div class="step-strip-list" id="stepStripList"></div>
-        <button class="step-go-pill" id="stepGo">완료</button>
+        <button class="step-go-pill" id="stepGo">끝내기</button>
       </div>
 
 
@@ -5105,9 +5111,22 @@ class CanvasRenderer {
       ctx.beginPath();
       if (ctx.roundRect) ctx.roundRect(x0, y0, w, h, radius);
       else ctx.rect(x0, y0, w, h);
-      // 허밍으로 갓 잡은 임시 음은 초록색 — [완료] 를 누르면 보통 색이 된다
-      ctx.fillStyle = n.staged ? '#22C55E' : (LAYER_COLORS[n.layer ?? 0] || LAYER_COLORS[0]);
-      ctx.fill();
+      // 허밍 관련 표시: 등록 대기(pending)는 반투명 초록 + 점선 테두리, 등록된 것은 보통 색
+      if (n.pending) {
+        ctx.globalAlpha *= 0.45;
+        ctx.fillStyle = '#22C55E';
+        ctx.fill();
+        ctx.globalAlpha = ctx.globalAlpha / 0.45;
+        ctx.save();
+        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = '#22C55E';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
+      } else {
+        ctx.fillStyle = n.staged ? '#22C55E' : (LAYER_COLORS[n.layer ?? 0] || LAYER_COLORS[0]);
+        ctx.fill();
+      }
 
       // 다중 선택된 노트: 흰색 테두리로 강조
       if (isMulti) {
@@ -5958,6 +5977,7 @@ class App {
       stepStripList: document.getElementById('stepStripList'),
       stepOk: document.getElementById('stepOk'),
       stepNo: document.getElementById('stepNo'),
+      stepClose: document.getElementById('stepClose'),
       stepGo: document.getElementById('stepGo'),
       stepTap: document.getElementById('stepTap'),
       stepTapHead: document.getElementById('stepTapHead'),
@@ -14982,7 +15002,7 @@ class App {
     if (prev === 2 && idx !== 2 && this.stepMic) { try { this.#stepRecStop(); } catch (_) {} }
     this._curTab = idx;
     // 마이크(녹음)는 그대로 두고, 떠 있는 튜너/스트립만 작곡 탭 밖에서 감춘다
-    if (this.stepMic || this.stepStaged?.length) this.#stepRefreshUI();
+    if (this.stepMic || this.stepStaged?.length || this.stepPendingId) this.#stepRefreshUI();
     this.dom.pager.dataset.idx = idx;          // 슬라이드(transform) 시작
     if (idx === 2) document.body.classList.add('tab-compose');   // 작곡 진입: 즉시 부여(가로 레이아웃 준비)
     document.body.classList.toggle('tab-piano', idx === 1);      // 피아노 탭만 세로 강제 회전
@@ -15434,22 +15454,26 @@ class App {
     this.stepQueue = [];      // (구) 박자 맞추기용 — 허밍은 더 이상 쓰지 않는다
     this.stepTapSt = null;    // 박자 맞추기 진행 상태
     this.stepMic = null;      // 듣는 중 상태 (있으면 버튼이 켜져 있다)
-    this.stepStaged = [];     // 임시(초록) 음의 노트 id — [완료] 전까지
+    this.stepStaged = [];     // 이번 세션에 등록한 노트 id
+    this.stepPendingId = null;// 등록 대기 중인 유령 음의 노트 id (한 번에 하나)
     this._stepLastMidi = null;
 
-    // 불러온 곡에 임시 표시가 남아 있으면 정식 노트로 본다
+    // 불러온 곡에 대기/임시 표시가 남아 있으면 정식 노트로 본다
     try {
-      for (const n of this.store.notes) if (n.staged) this.store.updateNote(n.id, { staged: false });
+      for (const n of this.store.notes) {
+        if (n.pending || n.staged) this.store.updateNote(n.id, { pending: false, staged: false });
+      }
     } catch (_) {}
 
     this.dom.stepCollectBtn?.addEventListener('click', () => this.#stepMicToggle());
     this.dom.stepTunerBtn?.addEventListener('click', () => this.#stepMicToggle());
-    // ✓(실시간 음 담기)는 방식이 바뀌면서 필요 없어졌다 — 감춘다
-    if (this.dom.stepOk) this.dom.stepOk.style.display = 'none';
-    // ↶ : 마지막 임시 음 하나 물리기
+    // ✓ : 대기 중인 음을 등록
+    this.dom.stepOk?.addEventListener('click', () => this.#stepRegisterPending());
+    // ↶ : 대기 음 버리기 / 없으면 마지막 등록 되돌리기
     this.dom.stepNo?.addEventListener('click', () => this.#stepUnstageLast());
-    // [완료] : 임시 음을 정식 노트로 확정
-    this.dom.stepGo?.addEventListener('click', () => this.#stepCommitStaged());
+    // ✕ · [끝내기] : 허밍 끄기
+    this.dom.stepClose?.addEventListener('click', () => this.#stepMicStop(true));
+    this.dom.stepGo?.addEventListener('click', () => this.#stepMicStop(true));
     this.#stepRenderCollect();
     this.#stepRenderStrip();
   }
@@ -15481,70 +15505,128 @@ class App {
   }
 
   // ══════════════════════════════════════════════════════════
-  //  임시(초록) 음 — 허밍으로 잡힌 음은 곧바로 그리드에 초록색으로 놓인다.
-  //  [완료] 를 눌러야 정식 노트가 되고, 그 전까지는 ↶ 로 하나씩 물릴 수 있다.
+  //  허밍 → 대기 → 등록
+  //   · 허밍하면 음이 '대기'에 올라간다 (그리드에 점선 초록 유령으로 미리 보인다)
+  //   · 아직 등록된 게 아니라서, 다시 허밍하면 그 자리에서 음만 바뀐다
+  //   · ✓ 를 눌러야 실제 노트로 등록된다
+  //  → 한 음을 불렀는데 두 개가 찍히던 문제가 구조적으로 사라진다.
+  //    잘못 잡혀도 그냥 다시 부르면 덮어써지기 때문이다.
   // ══════════════════════════════════════════════════════════
 
   // 새 음을 놓을 자리: 지금 레이어에서 마지막 노트 뒤, 없으면 시작선
+  //  (대기 중인 유령 음은 아직 등록 전이라 자리 계산에서 뺀다)
   #stepWriteBeat(layer) {
-    const arr = this.store.notes.filter(n => (n.layer ?? 0) === layer);
+    const arr = this.store.notes.filter(n => (n.layer ?? 0) === layer && !n.pending);
     if (!arr.length) return Math.max(0, this.store.startBeat || 0);
     return arr.reduce((mx, n) => Math.max(mx, n.beat + (n.len || 0)), 0);
   }
 
-  // 허밍 한 번 → 임시 음 하나
-  #stepStageNote(midi) {
+  // 이 음높이가 놓일 줄 — 마디 코드 제약이 있으면 가장 가까운 허용 음으로 붙인다
+  #stepRowFor(midi, beat) {
+    const bar = barOfBeat(beat);
+    let row = nearestVisibleRow(this.viewport, midiToRow(midi), bar);
+    if (rowAllowedIn(this.store.barChords, row, beat)) return row;
+    for (let d = 1; d < NOTE_ROWS.length; d++) {
+      for (const r of [row - d, row + d]) {
+        if (r < 0 || r >= NOTE_ROWS.length) continue;
+        if (rowAllowedIn(this.store.barChords, r, beat) && rowVisible(this.viewport, r, bar)) return r;
+      }
+    }
+    return row;
+  }
+
+  // 허밍으로 잡힌 음을 '대기'에 올린다. 이미 대기 중이면 그 음만 바꾼다.
+  #stepSetPending(midi) {
     if (!(midi >= 21 && midi <= 108)) return false;
     const layer = this.store.currentLayer;
+
+    // 이미 대기 중이면 자리는 그대로 두고 음높이만 갈아 끼운다
+    const cur = this.stepPendingId
+      ? this.store.notes.find(n => n.id === this.stepPendingId)
+      : null;
+    if (cur) {
+      const row = this.#stepRowFor(midi, cur.beat);
+      if (row !== cur.row) this.store.updateNote(cur.id, { row });
+      this._stepLastMidi = rowToMidi(row);
+      this.#stepPreviewTone(rowToMidi(row));
+      this.#stepReveal(this.store.notes.find(n => n.id === cur.id));
+      this.store.pingRender?.();
+      this.#stepRenderTuner();
+      return true;
+    }
+
     const beat = this.#stepWriteBeat(layer);
     this.#ensureTotalBeats(beat + STEP_NOTE_LEN * 2);
     if (beat >= TIMING.TOTAL_BEATS) { this.#stepFlash('그리드 끝까지 찼어요'); return false; }
+    const row = this.#stepRowFor(midi, beat);
 
-    const bar = barOfBeat(beat);
-    let row = nearestVisibleRow(this.viewport, midiToRow(midi), bar);
-    // 마디에 코드 제약이 걸려 있으면 가장 가까운 허용 음으로 붙인다
-    if (!rowAllowedIn(this.store.barChords, row, beat)) {
-      let found = null;
-      for (let d = 1; d < NOTE_ROWS.length && found == null; d++) {
-        for (const r of [row - d, row + d]) {
-          if (r < 0 || r >= NOTE_ROWS.length) continue;
-          if (rowAllowedIn(this.store.barChords, r, beat) && rowVisible(this.viewport, r, bar)) { found = r; break; }
-        }
-      }
-      if (found != null) row = found;
-    }
-
-    // 임시 음은 선택 대상이 되면 안 된다(선택이 튀면 그리기 조작과 엉킨다)
-    this._stepStaging = true;
+    this._stepStaging = true;   // 우리가 만든 것은 선택 대상이 되지 않게
     let id = null;
     try {
       id = this.store.addNote({
         row, beat,
         len: Math.min(STEP_NOTE_LEN, TIMING.TOTAL_BEATS - beat),
         inst: this.store.currentInstrument, velocity: 0.8, layer,
-        staged: true,
+        pending: true,
       });
     } finally { this._stepStaging = false; }
     if (!id) return false;
 
-    this.stepStaged.push(id);
-    this._stepLastMidi = midi;
-    const nt = this.store.notes.find(n => n.id === id);
-    if (nt) this.#stepReveal(nt);
-    try {
-      this.audio.triggerNow({
-        instrument: this.store.currentInstrument, midi: rowToMidi(row), duration: 0.35, velocity: 0.9,
-      });
-    } catch (_) {}
-    try { if (navigator.vibrate) navigator.vibrate(12); } catch (_) {}
+    this.stepPendingId = id;
+    this._stepLastMidi = rowToMidi(row);
+    this.#stepPreviewTone(rowToMidi(row));
+    this.#stepReveal(this.store.notes.find(n => n.id === id));
     this.store.pingRender?.();
-    this.#stepRenderStrip();
     this.#stepRenderTuner();
     return true;
   }
 
-  // ↶ : 마지막 임시 음 하나 물리기
+  #stepPreviewTone(midi) {
+    try {
+      this.audio.triggerNow({
+        instrument: this.store.currentInstrument, midi, duration: 0.35, velocity: 0.9,
+      });
+    } catch (_) {}
+    try { if (navigator.vibrate) navigator.vibrate(10); } catch (_) {}
+  }
+
+  // ✓ : 대기 중인 음을 실제 노트로 등록한다
+  #stepRegisterPending() {
+    const id = this.stepPendingId;
+    const nt = id ? this.store.notes.find(n => n.id === id) : null;
+    if (!nt) { this.#stepFlash('아직 잡힌 음이 없어요 — 「음~」 하고 불러 보세요'); return false; }
+    this.store.updateNote(id, { pending: false });
+    this.stepStaged.push(id);
+    this.stepPendingId = null;
+    this._stepLastMidi = null;
+    // 다음 허밍은 완전히 새로 받는다
+    const m = this.stepMic;
+    if (m) { m.armed = true; m.lastCommit = null; m.cand = null; m.count = 0; m.diff = 0; m.broke = true; }
+    try { if (navigator.vibrate) navigator.vibrate(16); } catch (_) {}
+    this.store.pingRender?.();
+    this.#stepRenderStrip();
+    this.#stepRenderTuner();
+    try { this.bus.emit('notes:changed'); } catch (_) {}
+    return true;
+  }
+
+  // 대기 중인 음을 버린다 (등록 전이므로 그냥 지운다)
+  #stepDropPending() {
+    const id = this.stepPendingId;
+    if (!id) return false;
+    this.stepPendingId = null;
+    this._stepLastMidi = null;
+    if (this.store.notes.some(n => n.id === id)) this.store.cancelLastAdd(id);
+    const m = this.stepMic;
+    if (m) { m.armed = true; m.lastCommit = null; m.cand = null; m.count = 0; m.diff = 0; m.broke = true; }
+    this.store.pingRender?.();
+    this.#stepRenderTuner();
+    return true;
+  }
+
+  // ↶ : 대기 중인 음이 있으면 그걸 버리고, 없으면 마지막으로 등록한 음을 되돌린다
   #stepUnstageLast() {
+    if (this.#stepDropPending()) { this.#stepFlash('잡힌 음을 버렸어요 · 다시 불러 주세요'); return true; }
     if (!this.stepStaged || !this.stepStaged.length) return false;
     let id = null;
     while (this.stepStaged.length) {
@@ -15552,29 +15634,16 @@ class App {
       if (this.store.notes.some(n => n.id === cand)) { id = cand; break; }
     }
     if (!id) return false;
-    this.store.cancelLastAdd(id);       // 히스토리를 더럽히지 않는 취소 경로
-    this._stepLastMidi = null;
+    this.store.cancelLastAdd(id);
     try { if (navigator.vibrate) navigator.vibrate(16); } catch (_) {}
     this.store.pingRender?.();
     this.#stepRenderStrip();
     this.#stepRenderTuner();
+    this.#stepFlash('마지막 등록을 되돌렸어요');
     return true;
   }
 
-  // [완료] : 임시 음을 정식 노트로 확정한다 (초록색이 풀리고 보통 노트가 된다)
-  #stepCommitStaged() {
-    const ids = (this.stepStaged || []).filter(id => this.store.notes.some(n => n.id === id));
-    if (!ids.length) return;
-    for (const id of ids) this.store.updateNote(id, { staged: false });
-    this.stepStaged = [];
-    this._stepLastMidi = null;
-    this.store.pingRender?.();
-    this.#stepRenderStrip();
-    this.#stepRenderTuner();
-    this.#stepFlash(ids.length + '음을 확정했어요 · 되돌리려면 ↩');
-  }
-
-  // 임시 음 목록 (그리드에 실제로 놓여 있으므로 노트에서 읽어 온다)
+  // 이번 세션에 등록된 음들 (하단 칩)
   #stepStagedNotes() {
     const byId = new Map(this.store.notes.map(n => [n.id, n]));
     return (this.stepStaged || []).map(id => byId.get(id)).filter(Boolean);
@@ -15759,14 +15828,14 @@ class App {
       // 확정끼리 너무 촘촘하면 한 음이 쪼개진 것으로 본다
       if (m.hitAt && now - m.hitAt < 170) return;
 
-      if (this.#stepStageNote(midi)) {
+      // 등록이 아니라 '대기'에 올린다 — 마음에 안 들면 그냥 다시 부르면 덮어써진다
+      if (this.#stepSetPending(midi)) {
         m.armed = false;
         m.lastCommit = midi;
         m.cand = null; m.count = 0; m.diff = 0; m.notes++;
         m.broke = false;
         m.hitAt = now;
         m.blocks.length = 0;
-        try { this.bus.emit('notes:changed'); } catch (_) {}   // 되돌리기 버튼 상태 갱신
       }
     };
 
@@ -15792,12 +15861,12 @@ class App {
     try { m.stream?.getTracks().forEach(t => t.stop()); } catch (_) {}
     m.src = m.sp = m.zero = null; m.stream = null; m.blocks = [];
     this.stepMic = null;
-    // 끄는 건 '허밍 모드 종료'다 — 남아 있던 임시 음은 그대로 확정하고 패널까지 전부 닫는다.
-    // (예전엔 임시 음이 남으면 패널이 계속 떠 있어서 껐는지 안 껐는지 알 수 없었다.
-    //  잘못 확정됐으면 되돌리기(↩)로 물리면 된다)
-    const left = (this.stepStaged || []).length;
-    if (left) this.#stepCommitStaged();
-    else this.#stepFlash('허밍 입력을 껐어요');
+    // 끄는 건 '허밍 모드 종료'다 — 아직 등록 안 한 대기 음은 버리고 패널까지 전부 닫는다.
+    // (등록(✓)한 음은 이미 정식 노트라 그대로 남는다)
+    this.#stepDropPending();
+    const done = (this.stepStaged || []).length;
+    this.stepStaged = [];
+    this.#stepFlash(done ? '허밍 입력을 껐어요 · ' + done + '음 등록됨' : '허밍 입력을 껐어요');
     this.#stepRefreshUI();
     try { this.bus.emit('notes:changed'); } catch (_) {}
   }
@@ -17098,8 +17167,8 @@ class App {
   #wireEvents() {
     const refreshUndo = () => {
       // 허밍 음정 이동은 자체 스택으로 되돌리므로, 그 스택이 남아 있으면 버튼을 살려 둔다
-      const staged = !!(this.stepStaged && this.stepStaged.length);
-      if (this.dom.undoFab) this.dom.undoFab.disabled = !(this.store.canUndo || staged);
+      const humUndo = !!(this.stepPendingId || (this.stepStaged && this.stepStaged.length));
+      if (this.dom.undoFab) this.dom.undoFab.disabled = !(this.store.canUndo || humUndo);
       if (this.dom.redoFab) this.dom.redoFab.disabled = !this.store.canRedo;
     };
     this.bus.on('notes:changed', () => { this.syncRowGeom(); this.renderer.schedule(); refreshUndo(); this.#updateNoteGrab(); this.#renderBarChordStrip();
