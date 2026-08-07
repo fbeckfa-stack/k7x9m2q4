@@ -2353,7 +2353,7 @@ body.tab-compose .page.compose .ctrl-bar .layer-step{justify-content:center;widt
         <div class="step-tuner-btns">
           <button class="step-fab x" id="stepClose" aria-label="허밍 끄기">✕</button>
           <button class="step-fab no" id="stepNo" aria-label="되돌리기">↶</button>
-          <button class="step-fab ok" id="stepOk" aria-label="이 음 등록">✓</button>
+          <button class="step-fab ok" id="stepOk" aria-label="지금 음 바로 넘기기">✓</button>
         </div>
       </div>
       <!-- 시간 순으로 쌓인 음높이 목록 (칩을 누르면 그 음만 삭제) -->
@@ -2408,7 +2408,7 @@ const STEP_NOTE_LEN = 0.5;
 //  아예 막지 않는 이유: 막으면 제대로 불렀는데도 아무것도 안 찍혀 더 답답하다.
 //  대신 애매한 도약은 확신이 설 때까지 기다렸다가 찍는다(40~100ms 더 걸림).
 const STEP_HOLD_FOR = (iv) => {
-  if (iv == null) return 4;                       // 첫 음 — 비교할 직전 음이 없다
+  if (iv == null) return 6;                       // 첫 음 — 비교할 직전 음이 없다
   const a = Math.abs(iv);
   // 기준: '사람이 부르기 어려운 간격'이 아니라 '검출기가 틀리는 간격'이다.
   //  자기상관 계열은 배음/하위배음에 걸리면 딱 옥타브(12·24)나 완전5도+옥타브(19),
@@ -2417,8 +2417,8 @@ const STEP_HOLD_FOR = (iv) => {
   const near = (x, t) => Math.abs(x - t) < 0.7;
   if (near(a, 12) || near(a, 24) || near(a, 19)) return 9;   // 배음 오검출과 구분이 안 되는 값
   if (near(a, 7)) return 6;                                   // 2:3 락온으로도 나오는 값
-  if (a >= 13) return 5;                                      // 그 밖의 광폭 도약
-  return 4;                                                   // 나머지는 전부 동일하게
+  if (a >= 13) return 7;                                      // 그 밖의 광폭 도약
+  return 6;                                                   // 나머지는 전부 동일하게
 };
 const PITCH_COLORS = ['#E9001E','#FF6A00','#FFB300','#FFE000','#9ACD00','#22C55E','#00C2A8','#00B4D8','#2680FF','#5B5BFF','#9D4EDD','#E84BC9'];
 const PITCH_LABELS_KO = ['도','도#','레','레#','미','파','파#','솔','솔#','라','라#','시'];
@@ -15611,10 +15611,12 @@ class App {
   }
 
   // ✓ : 대기 중인 음을 실제 노트로 등록한다
-  #stepRegisterPending() {
+  //  auto=true 면 '음이 끝나서 자동으로 등록'하는 경우다(연속 입력).
+  //  이때 다음 음을 받을 준비는 호출한 쪽이 이미 정하므로 여기서 검출기를 건드리지 않는다.
+  #stepRegisterPending(auto = false) {
     const id = this.stepPendingId;
     const nt = id ? this.store.notes.find(n => n.id === id) : null;
-    if (!nt) { this.#stepFlash('아직 잡힌 음이 없어요 — 「음~」 하고 불러 보세요'); return false; }
+    if (!nt) { this.#stepFlash('지금 잡히는 음이 없어요 — 「음~」 하고 불러 보세요'); return false; }
     // ── 등록 직전에 한 번 더 잰다 ──
     //  아직 소리를 끌고 있다면, 그 발성의 '안정된 뒷부분'만 모아 다시 반올림한다.
     //  확정은 발성 시작 후 100ms 남짓에 일어나 어택이 섞이기 쉬운데, ✓ 를 누르는 시점에는
@@ -15622,26 +15624,28 @@ class App {
     try {
       const m = this.stepMic;
       if (m && m.run && m.run.length >= 8) {
-        const tail = m.run.slice(4).sort((a, b) => a - b);
+        // 등록 순간에는 발성의 뒤쪽 60% 만 본다 — 가장 안정된 구간이다
+        const tail = m.run.slice(Math.max(4, Math.floor(m.run.length * 0.4))).sort((a, b) => a - b);
         const mid = tail[tail.length >> 1];
         const lo = tail[Math.floor((tail.length - 1) * 0.2)], hi = tail[Math.ceil((tail.length - 1) * 0.8)];
         const spread = hi - lo;
         if (spread < 1.1) {
-          const better = this.#stepQuantize(mid, m);
+          const better = this.#stepQuantize(mid, true);
           const cur = rowToMidi(nt.row);
           if (better !== cur && Math.abs(better - cur) < 1.2) this.#stepSetPending(better);
         }
       }
     } catch (_) {}
+    this.store.updateNote(id, { pending: false });   // 유령 → 정식 노트
     this.stepStaged.push(id);
     this.stepPendingId = null;
     this._stepLastMidi = null;
-    // 다음 허밍은 완전히 새로 받는다.
-    //  단, 여기서 armed 를 바로 열면 안 된다 — 사람은 소리를 끊기 전에 ✓ 를 누르므로
-    //  아직 나고 있는 그 소리가 곧바로 '다음 음'으로 잡혀 같은 음이 하나 더 붙는다.
-    //  무음을 한 번 확인한 뒤에야 다음 음을 받는다.
+    // ✓ 를 사람이 직접 누른 경우에만 다음 음을 잠근다.
+    //  사람은 소리를 끊기 전에 누르므로, 바로 열어 두면 아직 나고 있는 그 소리가
+    //  곧바로 '다음 음'으로 잡혀 같은 음이 하나 더 붙는다. 무음을 한 번 확인하고 받는다.
+    //  자동 등록(음이 끝나서 넘어가는 경우)은 호출한 쪽이 이미 상태를 정해 놨다.
     const m = this.stepMic;
-    if (m) { m.armed = false; m.needQuiet = 6; m.lastCommit = null; m.cand = null; m.count = 0; m.diff = 0; m.broke = true; }
+    if (m && !auto) { m.armed = false; m.needQuiet = 6; m.lastCommit = null; m.cand = null; m.count = 0; m.diff = 0; m.broke = true; }
     try { if (navigator.vibrate) navigator.vibrate(16); } catch (_) {}
     this.store.pingRender?.();
     this.#stepRenderStrip();
@@ -15736,7 +15740,9 @@ class App {
   //  아래 칸으로 넘어갈 준비가 된 상태가 된다(닫은 입 허밍은 대부분 살짝 낮다).
   //  그래서 최근에 잡은 음들의 '반음 경계로부터의 치우침' 중앙값을 빼고 반올림한다.
   //  ±0.35반음으로 묶어 폭주를 막고, 표본 4개가 모이기 전에는 보정하지 않는다.
-  #stepQuantize(value, m) {
+  //  record=true 는 '이 값으로 실제 등록된다'는 뜻이다. 확정 전 시도나 보정 중간값까지
+  //  표본에 넣으면 어택 한복판의 치우침이 섞여 보정치 자체가 낮아진다(첫 음이 낮게 나오던 원인).
+  #stepQuantize(value, record = false) {
     if (!(value > 0)) return Math.round(value);
     const h = (this._stepTuneDev = this._stepTuneDev || []);
     let off = 0;
@@ -15746,9 +15752,11 @@ class App {
       off = Math.max(-0.35, Math.min(0.35, off));
     }
     const midi = Math.round(value - off);
-    // 이번 값의 치우침을 표본에 넣는다(보정 전 원본 기준이라 되먹임이 없다)
-    const dev = value - Math.round(value);
-    if (Math.abs(dev) < 0.5) { h.push(dev); if (h.length > 16) h.shift(); }
+    if (record) {
+      // 치우침은 보정 전 원본 기준으로 담는다(되먹임 방지)
+      const dev = value - Math.round(value);
+      if (Math.abs(dev) < 0.5) { h.push(dev); if (h.length > 16) h.shift(); }
+    }
     return midi;
   }
 
@@ -15837,6 +15845,12 @@ class App {
         m.quiet++;
         // 잠깐이라도 끊기면 '다음 한 음'을 받을 수 있게 다시 열어 둔다
         if (m.quiet >= (m.needQuiet || 3)) {
+          // ── 연속 입력 ──
+          //  한 음이 끝났다(소리가 끊겼다). 대기 중이던 초록 음을 여기서 자동으로 등록하고
+          //  다음 음을 받는다. ✓ 를 사람이 누르는 대신 '음이 끝나는 순간'이 눌러 주는 셈이라,
+          //  부르는 동안 음높이를 다시 재서 바로잡는 장치는 그대로 살아 있다.
+          //  run 을 비우기 전에 등록해야 그 마지막 재측정이 반영된다.
+          if (this.stepPendingId) this.#stepRegisterPending(true);
           m.armed = true; m.cand = null; m.count = 0; m.diff = 0; m.blocks.length = 0;
           m.run.length = 0;   // 발성 한 번이 끝났다 — 중앙값 재료도 비운다
           m.broke = true;     // 소리가 한 번 끊겼다 = 다음 건 확실히 새로 부른 음
@@ -15869,7 +15883,11 @@ class App {
       //  128ms(6판정) 이상 계속 벗어나 있어야 '진짜 다음 음'으로 본다.
       if (!m.armed && m.lastCommit != null) {
         if (Math.abs(md - m.lastCommit) >= 1.2) m.diff++; else m.diff = 0;
-        if (m.diff >= 6) { m.armed = true; m.cand = null; m.count = 0; m.diff = 0; m.run.length = 0; }
+        if (m.diff >= 6) {
+          // 끊지 않고 이어 부르다 음이 바뀌었다 — 앞 음을 등록하고 다음 음으로 넘어간다
+          if (this.stepPendingId) this.#stepRegisterPending(true);
+          m.armed = true; m.cand = null; m.count = 0; m.diff = 0; m.run.length = 0;
+        }
       }
 
       // ── 발성 한 번의 판정값을 쌓아 둔다 ──
@@ -15900,7 +15918,7 @@ class App {
       //  새 음을 만드는 게 아니라 방금 만든 대기 음의 음높이만 바로잡는다(1.2반음 미만일 때만).
       if (!m.armed) {
         if (this.stepPendingId && m.run.length >= 8 && now - (m.refineAt || 0) > 70 && st.spread < 0.9) {
-          const better = this.#stepQuantize(st.mid, m);
+          const better = this.#stepQuantize(st.mid, false);
           if (better !== m.lastCommit && Math.abs(better - m.lastCommit) < 1.2) {
             if (this.#stepSetPending(better)) { m.lastCommit = better; m.refineAt = now; }
           } else m.refineAt = now;
@@ -15908,7 +15926,7 @@ class App {
         return;
       }
 
-      const midi = this.#stepQuantize(st.mid, m);
+      const midi = this.#stepQuantize(st.mid, false);
       const iv = (m.lastCommit == null) ? null : Math.abs(midi - m.lastCommit);
 
       // 옥타브(±12·±24) 오검출 방어: 검출기가 배음/기본음을 헷갈리면 딱 12의 배수만큼 튄다.
@@ -15955,6 +15973,10 @@ class App {
     if (!m) return;
     m.listening = false;
     cancelAnimationFrame(m.raf); m.raf = 0;
+    // 끄는 건 '허밍 입력 종료'다 — 마지막으로 부르던 음은 버리지 않고 등록해 준다.
+    // (연속 입력이라 사용자가 따로 확정할 기회가 없기 때문이다)
+    // stepMic 을 치우기 전에 해야 마지막 재측정(안정 구간 중앙값)이 반영된다.
+    if (this.stepPendingId) { try { this.#stepRegisterPending(true); } catch (_) {} }
     try { m.src?.disconnect(); } catch (_) {}
     try { m.sp?.disconnect(); } catch (_) {}
     try { m.zero?.disconnect(); } catch (_) {}
@@ -15962,8 +15984,6 @@ class App {
     try { m.stream?.getTracks().forEach(t => t.stop()); } catch (_) {}
     m.src = m.sp = m.zero = null; m.stream = null; m.blocks = [];
     this.stepMic = null;
-    // 끄는 건 '허밍 모드 종료'다 — 아직 등록 안 한 대기 음은 버리고 패널까지 전부 닫는다.
-    // (등록(✓)한 음은 이미 정식 노트라 그대로 남는다)
     this.#stepDropPending();
     const done = (this.stepStaged || []).length;
     this.stepStaged = [];
@@ -16010,8 +16030,8 @@ class App {
     if (noteEl) noteEl.textContent = (last != null) ? (this.#stepNoteKo(last) + this.#stepOct(last)) : '듣는 중';
     if (centEl) {
       centEl.textContent = m.notes
-        ? m.notes + '음 잡았어요 · 한 음씩 끊어서 불러 주세요'
-        : '「음~」 하고 한 음씩 끊어서 불러 주세요';
+        ? m.notes + '음 담겼어요 · 이어서 계속 불러 주세요'
+        : '「음~ 음~ 음~」 이어서 불러 주세요 · 음 사이는 살짝 끊고요';
     }
     const lv = Math.max(0, Math.min(1, (m.rms || 0) * 7));
     if (needle) needle.style.width = (lv * 100).toFixed(0) + '%';
