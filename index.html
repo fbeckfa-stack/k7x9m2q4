@@ -2397,6 +2397,19 @@ const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 // 색상 기반 에디터: 12음 각각 고유 색 + 표시용 음이름(도~시)
 // 허밍으로 놓는 임시 음의 길이(박) — 예전 1박의 절반
 const STEP_NOTE_LEN = 0.5;
+// ── 확정에 필요한 판정 수 (한 판정 ≈ 21ms) ──
+//  사람이 허밍으로 정확히 짚기 어려운 간격일수록 더 오래 확인한다.
+//  아예 막지 않는 이유: 막으면 제대로 불렀는데도 아무것도 안 찍혀 더 답답하다.
+//  대신 애매한 도약은 확신이 설 때까지 기다렸다가 찍는다(40~100ms 더 걸림).
+const STEP_HOLD_FOR = (iv) => {
+  if (iv == null) return 3;                       // 첫 음 — 비교할 직전 음이 없다
+  const a = Math.abs(iv);
+  if (a >= 11) return 8;                          // 장7도 이상 광폭 도약 (중간음을 스치며 올라가 오인 잦음)
+  if (a >= 7) return 5;                           // 5도 이상 도약
+  if (a >= 5.5 && a <= 6.5) return 5;             // 트라이톤 — 성대로 가장 짚기 어려운 간격
+  if (a >= 2.5 && a <= 3.5) return 4;             // 증2도·단3도 부근 — 꺾어 부르다 이탈하기 쉬움
+  return 3;                                       // 순차 진행 — 가장 믿을 만하다
+};
 const PITCH_COLORS = ['#E9001E','#FF6A00','#FFB300','#FFE000','#9ACD00','#22C55E','#00C2A8','#00B4D8','#2680FF','#5B5BFF','#9D4EDD','#E84BC9'];
 const PITCH_LABELS_KO = ['도','도#','레','레#','미','파','파#','솔','솔#','라','라#','시'];
 const pitchColor = (midi) => PITCH_COLORS[((midi % 12) + 12) % 12];
@@ -14965,6 +14978,8 @@ class App {
       this.dom.kbCloseBtn?.click();
     }
     if (prev === 2 && idx !== 2 && this._voiceMode) this.#stopVoiceRec();       // 작곡 탭 이탈 시 목소리 입력 종료
+    // 허밍 입력은 작곡 탭에만 끄는 버튼이 있다 → 탭을 떠나면 같이 끝낸다
+    if (prev === 2 && idx !== 2 && this.stepMic) { try { this.#stepRecStop(); } catch (_) {} }
     this._curTab = idx;
     // 마이크(녹음)는 그대로 두고, 떠 있는 튜너/스트립만 작곡 탭 밖에서 감춘다
     if (this.stepMic || this.stepStaged?.length) this.#stepRefreshUI();
@@ -15556,7 +15571,7 @@ class App {
     this.store.pingRender?.();
     this.#stepRenderStrip();
     this.#stepRenderTuner();
-    this.#stepFlash(ids.length + '음을 확정했어요');
+    this.#stepFlash(ids.length + '음을 확정했어요 · 되돌리려면 ↩');
   }
 
   // 임시 음 목록 (그리드에 실제로 놓여 있으므로 노트에서 읽어 온다)
@@ -15612,7 +15627,10 @@ class App {
   //  음정 검출은 허밍 탭과 같은 함수(#humAnalyzeBuffer 의 단일음 모드)를 그대로 쓴다.
   async #stepMicToggle() {
     if (this.stepMic) { this.#stepRecStop(); return; }
-    await this.#stepRecStart();
+    if (this._stepStarting) return;      // 마이크 권한 기다리는 중 연타 방지
+    this._stepStarting = true;
+    try { await this.#stepRecStart(); }
+    finally { this._stepStarting = false; }
   }
 
   // force=true 일 때만 실제로 멈춘다.
@@ -15654,6 +15672,8 @@ class App {
       quiet: 0,
       cand: null,          // 지금 이어지고 있는 음(소수 midi)
       count: 0,            // 그 음이 이어진 판정 수
+      diff: 0,             // 직전 확정음과 다른 음이 연속으로 이어진 판정 수
+      broke: true,         // 직전 확정 이후 소리가 끊긴 적이 있는가
       armed: true,         // 지금 '새 한 음'을 받을 수 있는가
       lastCommit: null,
       hitAt: 0,            // 마지막 확정 시각 (초록 불빛용)
@@ -15662,7 +15682,6 @@ class App {
 
     // 검출 창: 최근 blocks 를 합쳐 최소 0.08초 확보 (16kHz 로 내리면 1024 샘플 = 창 하나)
     const NEED = Math.max(4, Math.ceil(m.sr * 0.08 / 1024));
-    const HOLD = 3;        // 같은 음이 3판정(약 64ms) 이어지면 확정
 
     sp.onaudioprocess = (ev) => {
       if (!m.listening) return;
@@ -15672,15 +15691,21 @@ class App {
       const rms = Math.sqrt(e2 / blk.length);
       m.rms = rms;
 
-      // 잡음 바닥을 추적해 게이트를 환경에 맞춘다
+      // 잡음 바닥을 추적해 게이트를 환경에 맞춘다.
+      //  중요: 바닥은 '조용한 구간에서만' 갱신한다.
+      //  예전엔 소리가 클 때도 바닥을 조금씩 끌어올려서, 끊지 않고 길게 부르면
+      //  2초쯤 뒤 게이트가 목소리보다 높아져 인식이 통째로 멈췄다.
       if (m.floor == null) m.floor = rms;
-      else m.floor = (rms < m.floor) ? (m.floor * 0.7 + rms * 0.3) : (m.floor * 0.995 + rms * 0.005);
       const gate = Math.max(0.004, m.floor * 4);
+      if (rms < gate) m.floor = m.floor * 0.7 + rms * 0.3;
 
       if (rms < gate) {
         m.quiet++;
         // 잠깐이라도 끊기면 '다음 한 음'을 받을 수 있게 다시 열어 둔다
-        if (m.quiet >= 3) { m.armed = true; m.cand = null; m.count = 0; m.blocks.length = 0; }
+        if (m.quiet >= 3) {
+          m.armed = true; m.cand = null; m.count = 0; m.diff = 0; m.blocks.length = 0;
+          m.broke = true;     // 소리가 한 번 끊겼다 = 다음 건 확실히 새로 부른 음
+        }
         return;
       }
       m.quiet = 0;
@@ -15700,20 +15725,46 @@ class App {
       if (md == null) return;
 
       // 끊지 않고 이어 불러도 반음 이상 달라지면 '다음 음'으로 본다
-      if (!m.armed && m.lastCommit != null && Math.abs(md - m.lastCommit) >= 0.9) {
-        m.armed = true; m.cand = null; m.count = 0;
+      // ── 끊지 않고 이어 부르다 음이 바뀐 경우 ──
+      //  예전엔 '한 프레임'만 0.9반음 벗어나도 다음 음으로 열어 버렸다.
+      //  비브라토 한 번이나 옥타브 오검출 한 프레임이면 한 음을 부르는데 두 음이 찍혔다.
+      //  이제는 벗어난 상태가 연속으로 이어져야 인정한다.
+      //  비브라토는 5~6Hz 로 흔들리므로 벗어난 상태가 90ms 넘게 이어지지 않는다.
+      //  128ms(6판정) 이상 계속 벗어나 있어야 '진짜 다음 음'으로 본다.
+      if (!m.armed && m.lastCommit != null) {
+        if (Math.abs(md - m.lastCommit) >= 1.2) m.diff++; else m.diff = 0;
+        if (m.diff >= 6) { m.armed = true; m.cand = null; m.count = 0; m.diff = 0; }
       }
       if (m.cand == null || Math.abs(md - m.cand) > 0.7) { m.cand = md; m.count = 1; return; }
       m.cand = m.cand * 0.55 + md * 0.45;
       m.count++;
-      if (!m.armed || m.count < HOLD) return;
+      if (!m.armed) return;
 
+      const now = performance.now();
       const midi = Math.round(m.cand);
+      const iv = (m.lastCommit == null) ? null : Math.abs(midi - m.lastCommit);
+
+      // 옥타브(±12·±24) 오검출 방어: 검출기가 배음/기본음을 헷갈리면 딱 12의 배수만큼 튄다.
+      //  방금 부른 음 직후에 정확히 옥타브 차이가 나오면 사람이 뛴 게 아니라 오검출로 본다.
+      if (iv != null && now - (m.hitAt || 0) < 700) {
+        const oct = Math.abs(iv - 12) < 0.6 || Math.abs(iv - 24) < 0.6;
+        if (oct) { m.cand = null; m.count = 0; return; }
+      }
+      // 끊지 않고 이어 부른 경우, 같은 음이 또 찍히는 건 한 음이 쪼개진 것이다
+      if (!m.broke && iv != null && iv < 0.5) { m.cand = null; m.count = 0; return; }
+      // 확정에 필요한 판정 수를 '도약 폭'에 따라 다르게 — 부르기 어려운 간격일수록 더 확실해야 한다
+      //  끊지 않고 이어 부른 경우는 경계가 흐리므로 두 판정 더 본다
+      const need = STEP_HOLD_FOR(iv) + (m.broke ? 0 : 2);
+      if (m.count < need) return;
+      // 확정끼리 너무 촘촘하면 한 음이 쪼개진 것으로 본다
+      if (m.hitAt && now - m.hitAt < 170) return;
+
       if (this.#stepStageNote(midi)) {
         m.armed = false;
         m.lastCommit = midi;
-        m.cand = null; m.count = 0; m.notes++;
-        m.hitAt = performance.now();
+        m.cand = null; m.count = 0; m.diff = 0; m.notes++;
+        m.broke = false;
+        m.hitAt = now;
         m.blocks.length = 0;
         try { this.bus.emit('notes:changed'); } catch (_) {}   // 되돌리기 버튼 상태 갱신
       }
@@ -15741,7 +15792,12 @@ class App {
     try { m.stream?.getTracks().forEach(t => t.stop()); } catch (_) {}
     m.src = m.sp = m.zero = null; m.stream = null; m.blocks = [];
     this.stepMic = null;
-    // 임시 음은 남겨 둔다 — [완료] 를 눌러야 확정되고, ↶ 로 물릴 수도 있다
+    // 끄는 건 '허밍 모드 종료'다 — 남아 있던 임시 음은 그대로 확정하고 패널까지 전부 닫는다.
+    // (예전엔 임시 음이 남으면 패널이 계속 떠 있어서 껐는지 안 껐는지 알 수 없었다.
+    //  잘못 확정됐으면 되돌리기(↩)로 물리면 된다)
+    const left = (this.stepStaged || []).length;
+    if (left) this.#stepCommitStaged();
+    else this.#stepFlash('허밍 입력을 껐어요');
     this.#stepRefreshUI();
     try { this.bus.emit('notes:changed'); } catch (_) {}
   }
@@ -15752,7 +15808,8 @@ class App {
     const needle = this.dom.stepTunerNeedle, panel = this.dom.stepTuner;
     if (!panel) return;
     const staged = (this.stepStaged || []).length;
-    const show = (!!m || staged > 0) && !this.stepTapSt && this.#stepOnComposeTab();
+    // 듣는 중일 때만 뜬다. 끄면 임시 음이 확정되면서 같이 사라진다.
+    const show = !!m && !this.stepTapSt && this.#stepOnComposeTab();
     panel.classList.toggle('on', show);
     panel.classList.toggle('rec', !!m);
     panel.classList.toggle('fill', !!m);
@@ -15768,13 +15825,13 @@ class App {
     panel.classList.toggle('pitch-edit', staged > 0);
     if (tgtEl) {
       tgtEl.textContent = staged
-        ? '✎ 임시 ' + staged + '음 · [완료] 를 눌러야 확정돼요  (↶ 하나 물리기)'
+        ? '✎ 임시 ' + staged + '음 · [완료] 또는 ● 를 다시 눌러 확정  (↶ 하나 물리기)'
         : '';
     }
 
     if (!m) {
-      if (noteEl) noteEl.textContent = staged ? staged + '음' : '—';
-      if (centEl) centEl.textContent = staged ? '듣기를 껐어요 · [완료] 로 확정하세요' : '● 를 눌러 허밍을 켜세요';
+      if (noteEl) noteEl.textContent = '—';
+      if (centEl) centEl.textContent = '● 를 눌러 허밍을 켜세요';
       if (needle) needle.style.width = '0%';
       return;
     }
@@ -15795,7 +15852,7 @@ class App {
     if (!strip || !list) return;
     const notes = this.#stepStagedNotes();
     const n = notes.length;
-    strip.classList.toggle('on', (n > 0 || !!this.stepMic) && !this.stepTapSt && this.#stepOnComposeTab());
+    strip.classList.toggle('on', !!this.stepMic && !this.stepTapSt && this.#stepOnComposeTab());
     list.innerHTML = '';
     if (!n) {
       const e = document.createElement('div');
