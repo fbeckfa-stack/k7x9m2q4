@@ -2189,6 +2189,13 @@ body.tab-compose .page.compose .ctrl-bar .layer-step{justify-content:center;widt
           </div>
         </div>
         <div class="hum-opt">
+          <span class="hum-opt-l">정밀 분석</span>
+          <div class="hum-seg" id="humPrecSeg">
+            <button data-p="0" class="active">보통</button>
+            <button data-p="1" title="느리게 재생하는 것과 같은 효과로 분석 해상도를 높입니다. 시간이 조금 더 걸려요">정밀(느린 재생 보정)</button>
+          </div>
+        </div>
+        <div class="hum-opt">
           <span class="hum-opt-l">옥타브</span>
           <div class="hum-seg" id="humOctSeg">
             <button data-o="-2">−2</button>
@@ -13913,6 +13920,7 @@ class App {
       notes: null,        // 최종 멜로디 [{midi, beat, len}]
       bpm: Math.round(this.store.bpm) || 120,
       quant: 0,           // 0 = 그대로, 0.5 = 1/8, 0.25 = 1/16 (박 단위)
+      precise: 0,         // 0 = 보통, 1 = 정밀(저속 재생 보정) — 분석 시 창을 넓히고 hop을 촘촘히 함
       oct: 0,
       scaleFix: 0,
       sendMode: 'add',
@@ -13924,7 +13932,7 @@ class App {
       recBtn: $('humRecBtn'), time: $('humTime'), sub: $('humRecSub'), level: $('humLevel'),
       wave: $('humWave'), playBtn: $('humPlayBtn'), clearBtn: $('humClearBtn'),
       bpmVal: $('humBpmVal'), bpmUp: $('humBpmUp'), bpmDown: $('humBpmDown'), bpmAuto: $('humBpmAuto'),
-      quantSeg: $('humQuantSeg'), octSeg: $('humOctSeg'), scaleSeg: $('humScaleSeg'),
+      quantSeg: $('humQuantSeg'), precSeg: $('humPrecSeg'), octSeg: $('humOctSeg'), scaleSeg: $('humScaleSeg'),
       goBtn: $('humGoBtn'), prog: $('humProg'), progFill: $('humProgFill'),
       card: $('humResultCard'), info: $('humResultInfo'), roll: $('humRoll'),
       playMel: $('humPlayMelBtn'), playBoth: $('humPlayBothBtn'),
@@ -13957,6 +13965,13 @@ class App {
     wireSeg(e.quantSeg, 'q', 'quant', v => parseFloat(v));
     wireSeg(e.octSeg, 'o', 'oct', v => parseInt(v));
     wireSeg(e.scaleSeg, 's', 'scaleFix', v => parseInt(v));
+    // 정밀 분석 토글: 창/hop 자체가 바뀌므로 자동 재빌드 대신 재분석이 필요함을 안내한다
+    e.precSeg?.addEventListener('click', (ev) => {
+      const b = ev.target.closest('button'); if (!b) return;
+      e.precSeg.querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
+      d.precise = parseInt(b.dataset.p);
+      if (d.segs) e.sub.textContent = '[멜로디로 변환] 을 다시 누르면 정밀도가 반영돼요';
+    });
     e.sendSeg?.addEventListener('click', (ev) => {
       const b = ev.target.closest('button'); if (!b) return;
       e.sendSeg.querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
@@ -14218,34 +14233,43 @@ class App {
   }
 
   // ══════════════ ② 분석 (오프라인) ══════════════
+  //  정밀 모드(precise=1): 다운샘플을 덜 하고(음정 해상도↑) 분석창을 2배로 넓히며 hop을 절반으로
+  //  좁힌다. 창 안에 더 많은 파형 주기가 들어가는 효과라 '느리게 재생해서 분석하는 것'과 원리가
+  //  같다 — 실제로 오디오를 늘리지 않고도 같은 이득을 얻는다(재생 시간은 그대로, 계산량만 늘어남).
   #humAnalyze() {
     const d = this._hum;
     if (!d.buf || d.recording) return;
     this.#humStopPlay();
     const sr = d.sr, raw = d.buf;
-    // 16kHz 근처로 다운샘플 — 피치 검출에 충분하고 4배 가까이 빨라진다
-    const ds = Math.max(1, Math.round(sr / 16000));
+    const precise = !!d.precise;
+    // 16kHz 근처로 다운샘플 — 피치 검출에 충분하고 4배 가까이 빨라진다.
+    // 정밀 모드는 24kHz까지만 낮춰 고음(여성 목소리 등)의 주기 해상도를 더 남긴다.
+    const targetSR = precise ? 24000 : 16000;
+    const ds = Math.max(1, Math.round(sr / targetSR));
     const dsSR = sr / ds;
     const M = Math.floor(raw.length / ds);
     const sig = new Float32Array(M);
     for (let i = 0; i < M; i++) { let s = 0; const b = i * ds; for (let j = 0; j < ds; j++) s += raw[b + j]; sig[i] = s / ds; }
-    // 창은 32ms 고정, hop 은 길이에 따라 늘린다.
-    //  긴 녹음에서 8ms hop 을 고집하면 프레임 수가 수천~수만이 되어 분석이 하염없이 길어진다.
+    // 창은 32ms 고정(정밀 모드는 64ms), hop 은 길이에 따라 늘린다.
+    //  긴 녹음에서 짧은 hop 을 고집하면 프레임 수가 수천~수만이 되어 분석이 하염없이 길어진다.
     //  시작 시각은 뒤에서 '어택 백트래킹'으로 샘플 단위로 다시 맞추므로 hop 이 커도 박자는 안 흐트러진다.
     const approxSec = M / dsSR;
-    const W = 512, H = approxSec <= 20 ? 128 : (approxSec <= 45 ? 192 : 256);
+    const baseW = approxSec <= 20 ? 128 : (approxSec <= 45 ? 192 : 256);
+    const W = precise ? 1024 : 512;                          // 정밀 모드: 창을 2배로(더 많은 주기 확보)
+    const H = precise ? Math.round(baseW * 0.75) : baseW;     // hop 은 조금만 좁혀 프레임 수 폭증을 막음
     const nFrames = Math.floor((M - W) / H) + 1;
     if (nFrames < 4) { d.el.sub.textContent = '녹음이 너무 짧아 분석할 수 없어요'; return; }
 
     const contour = new Array(nFrames).fill(-1);
     const energy = new Float32Array(nFrames);
     const clarity = new Float32Array(nFrames);
+    const candFrames = new Array(nFrames);       // pYIN 후보열(Viterbi 입력)
     const win = new Float32Array(W);
     let f = 0;
     d.el.prog.classList.add('on');
     d.el.progFill.style.width = '0%';
     d.el.goBtn.disabled = true;
-    d.el.goBtn.textContent = '분석 중…';
+    d.el.goBtn.textContent = precise ? '정밀 분석 중…' : '분석 중…';
 
     const step = () => {
       const t0 = performance.now();
@@ -14254,6 +14278,7 @@ class App {
         for (let i = 0; i < W; i++) win[i] = sig[s + i];
         let e2 = 0; for (let i = 0; i < W; i++) e2 += win[i] * win[i];
         energy[f] = Math.sqrt(e2 / W);
+        let cf = { cands: [], voicedProb: 0 };
         if (energy[f] > 0.005) {
           const mp = detectPitchMPM(win, dsSR);
           const fy = detectPitchYIN(win, dsSR);
@@ -14266,15 +14291,21 @@ class App {
           else if (mp.freq > 0) fHz = mp.freq;
           if (fHz > 0) contour[f] = 69 + 12 * Math.log2(fHz / 440);
           clarity[f] = mp.clarity;
+          cf = pyinCandidates(win, dsSR);            // Viterbi 스무딩용 확률 후보
         }
+        candFrames[f] = cf;
         f++;
       }
       d.el.progFill.style.width = Math.round(f / nFrames * 100) + '%';
       if (f < nFrames) { setTimeout(step, 0); return; }
+      // pYIN 2단계: Viterbi/HMM로 전역 스무딩 — 프레임 단위 즉석 판정에서 놓치는 옥타브 튐과
+      // 헛전이(순간 노이즈로 튀는 프레임)를 전역 최적 경로로 구조적으로 제거한다.
+      let vTrack = null;
+      try { vTrack = viterbiPitch(candFrames, 33, 88); } catch (err) { console.warn('[hum viterbi]', err); vTrack = null; }
       let plosive = null;
       try { plosive = plosiveOnsets(sig, H, dsSR, nFrames); } catch (err) { console.warn('[hum plosive]', err); }
       try {
-        d.segs = this.#humSegment(contour, energy, clarity, H / dsSR, sig, dsSR, H, { plosive });
+        d.segs = this.#humSegment(contour, energy, clarity, H / dsSR, sig, dsSR, H, { plosive, vTrack });
       } catch (err) { console.warn('[hum segment]', err); d.segs = []; }
       d.el.prog.classList.remove('on');
       d.el.goBtn.disabled = false;
@@ -14298,11 +14329,17 @@ class App {
   #humSegment(contour, energy, clar, frameSec, sig, dsSR, H, opts = {}) {
     const n = contour.length;
     const plosive = opts.plosive || null;
-    // 중앙값 평활(±2)
+    const vTrack = opts.vTrack || null;   // pYIN+Viterbi 전역 스무딩 결과(프레임별 midi 또는 -1)
+    // 중앙값 평활(±2). vTrack이 있으면 순간 프레임값 대신 '전역 최적 경로'를 기준으로 삼되,
+    // vTrack이 무성(-1)으로 판단한 자리는 원래 contour(순간 검출)로 보완한다 — 서로의 약점을 메운다.
     const sm = new Array(n);
     for (let i = 0; i < n; i++) {
       const w = [];
-      for (let k = -2; k <= 2; k++) { const v = contour[i + k]; if (v > 0) w.push(v); }
+      for (let k = -2; k <= 2; k++) {
+        const idx = i + k; if (idx < 0 || idx >= n) continue;
+        const vv = (vTrack && vTrack[idx] > 0) ? vTrack[idx] : contour[idx];
+        if (vv > 0) w.push(vv);
+      }
       if (!w.length) { sm[i] = -1; continue; }
       w.sort((a, b) => a - b); sm[i] = w[(w.length - 1) >> 1];
     }
@@ -14374,13 +14411,33 @@ class App {
         if (fHz > 0) s.midi = finalize(69 + 12 * Math.log2(fHz / 440));
       }
     }
-    // 5) 옥타브 튐 완화 (전체 중앙값에서 9반음 이상 떨어진 것만 되돌림)
+    // 5) 옥타브 튐 완화. 전역 중앙값만 보면 정말 옥타브를 오가는 멜로디까지 눌러버리므로,
+    //    먼저 '바로 이웃 세그먼트'와 비교해 진짜 고립된 튐인지 확인하고, 이웃도 마땅치 않을 때만
+    //    전역 중앙값을 참고한다. vTrack이 해당 구간에서 일관되게 다른 옥타브를 가리키면 그쪽을 우선한다.
     {
       const allM = segs.map(s => s.midi).slice().sort((a, b) => a - b);
       const gmed = allM[allM.length >> 1];
-      for (const s of segs) {
-        if (s.midi - gmed >= 9 && s.midi - 12 >= 24) s.midi -= 12;
-        else if (gmed - s.midi >= 9 && s.midi + 12 <= 107) s.midi += 12;
+      for (let si = 0; si < segs.length; si++) {
+        const s = segs[si];
+        const prev = si > 0 ? segs[si - 1].midi : null;
+        const next = si < segs.length - 1 ? segs[si + 1].midi : null;
+        const neighborRef = [prev, next].filter(v => v != null);
+        // vTrack이 이 세그먼트 구간에서 판단한 최빈 옥타브(있으면 최우선 근거)
+        let vRef = null;
+        if (vTrack) {
+          const vv = []; for (let ff = s.startF; ff < s.endF; ff++) if (vTrack[ff] > 0) vv.push(vTrack[ff]);
+          if (vv.length >= Math.max(2, (s.endF - s.startF) * 0.5)) {
+            vv.sort((a, b) => a - b); vRef = vv[vv.length >> 1];
+          }
+        }
+        const ref = vRef != null ? vRef : (neighborRef.length ? neighborRef.reduce((a, b) => a + b, 0) / neighborRef.length : gmed);
+        if (s.midi - ref >= 9 && s.midi - 12 >= 24) s.midi -= 12;
+        else if (ref - s.midi >= 9 && s.midi + 12 <= 107) s.midi += 12;
+        // 이웃도 vTrack도 없는 고립 세그먼트는 기존처럼 전역 중앙값으로 최종 점검
+        else if (!neighborRef.length && vRef == null) {
+          if (s.midi - gmed >= 9 && s.midi - 12 >= 24) s.midi -= 12;
+          else if (gmed - s.midi >= 9 && s.midi + 12 <= 107) s.midi += 12;
+        }
       }
     }
     // 6) 어택 백트래킹: 시작 시각을 '바로 앞 에너지 골' 로 되돌려 실제 부른 순간에 맞춘다
