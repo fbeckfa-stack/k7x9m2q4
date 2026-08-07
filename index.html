@@ -2408,13 +2408,17 @@ const STEP_NOTE_LEN = 0.5;
 //  아예 막지 않는 이유: 막으면 제대로 불렀는데도 아무것도 안 찍혀 더 답답하다.
 //  대신 애매한 도약은 확신이 설 때까지 기다렸다가 찍는다(40~100ms 더 걸림).
 const STEP_HOLD_FOR = (iv) => {
-  if (iv == null) return 3;                       // 첫 음 — 비교할 직전 음이 없다
+  if (iv == null) return 4;                       // 첫 음 — 비교할 직전 음이 없다
   const a = Math.abs(iv);
-  if (a >= 11) return 8;                          // 장7도 이상 광폭 도약 (중간음을 스치며 올라가 오인 잦음)
-  if (a >= 7) return 5;                           // 5도 이상 도약
-  if (a >= 5.5 && a <= 6.5) return 5;             // 트라이톤 — 성대로 가장 짚기 어려운 간격
-  if (a >= 2.5 && a <= 3.5) return 4;             // 증2도·단3도 부근 — 꺾어 부르다 이탈하기 쉬움
-  return 3;                                       // 순차 진행 — 가장 믿을 만하다
+  // 기준: '사람이 부르기 어려운 간격'이 아니라 '검출기가 틀리는 간격'이다.
+  //  자기상관 계열은 배음/하위배음에 걸리면 딱 옥타브(12·24)나 완전5도+옥타브(19),
+  //  그리고 2:3 락온으로 7반음만큼 튄다. 트라이톤·증2도는 검출기가 헷갈리는 값이 아니라
+  //  사람이 음정을 못 맞추는 것뿐이고, 그건 오래 기다린다고 고쳐지지 않는다.
+  const near = (x, t) => Math.abs(x - t) < 0.7;
+  if (near(a, 12) || near(a, 24) || near(a, 19)) return 9;   // 배음 오검출과 구분이 안 되는 값
+  if (near(a, 7)) return 6;                                   // 2:3 락온으로도 나오는 값
+  if (a >= 13) return 5;                                      // 그 밖의 광폭 도약
+  return 4;                                                   // 나머지는 전부 동일하게
 };
 const PITCH_COLORS = ['#E9001E','#FF6A00','#FFB300','#FFE000','#9ACD00','#22C55E','#00C2A8','#00B4D8','#2680FF','#5B5BFF','#9D4EDD','#E84BC9'];
 const PITCH_LABELS_KO = ['도','도#','레','레#','미','파','파#','솔','솔#','라','라#','시'];
@@ -14580,14 +14584,30 @@ class App {
       const w = sig.subarray(st, st + W);
       const mp = detectPitchMPM(w, dsSR);
       const fy = detectPitchYIN(w, dsSR);
-      const hz = (mp.freq > 0 && mp.clarity >= 0.9) ? mp.freq : (fy > 0 ? fy : mp.freq);
-      if (!(hz > 0)) continue;
-      const md = 69 + 12 * Math.log2(hz / 440);
-      if (md >= 21 && md <= 108) cands.push(md);
+      // ── 어느 쪽을 믿을지 ──
+      //  예전엔 MPM 명료도가 0.9 미만이면 무조건 YIN 을 썼다. 그런데 소리가 약하거나
+      //  숨이 섞이면 YIN 은 문턱(0.12) 아래 골짜기를 못 찾아 '전체 최솟값'으로 폴백하는데,
+      //  주기 신호에서는 2T(한 옥타브 아래) 골짜기가 더 깊은 경우가 흔하다 → 옥타브 아래로 떨어진다.
+      //  MPM 은 첫 피크를 고르므로 바로 그 오류에 강하다. 애매할수록 MPM 을 믿어야 맞다.
+      let hz = -1, cl = mp.clarity || 0;
+      const toMidi = (f) => 69 + 12 * Math.log2(f / 440);
+      if (mp.freq > 0 && fy > 0) {
+        const dm = Math.abs(toMidi(mp.freq) - toMidi(fy));
+        if (dm <= 1) hz = (mp.clarity >= 0.9) ? mp.freq : fy;      // 둘이 일치 — 기존과 동일
+        else hz = (mp.clarity >= 0.6) ? mp.freq : fy;              // 대개 옥타브 불일치 — MPM 편
+      } else if (mp.freq > 0 && mp.clarity >= 0.6) hz = mp.freq;
+      else if (fy > 0) { hz = fy; cl = Math.max(cl, 0.55); }
+      else if (mp.freq > 0 && mp.clarity >= 0.45) hz = mp.freq;
+      // 신뢰도 게이트: 둘 다 못 믿겠으면 음정을 만들지 않는다.
+      //  (없으면 숨소리·옷 스침·에어컨에도 '가장 가까운 음'이 계산되어 찍힌다)
+      if (!(hz > 0) || cl < 0.45) continue;
+      const md = toMidi(hz);
+      if (md >= 21 && md <= 108) cands.push({ md, cl });
     }
     if (!cands.length) return [];
-    cands.sort((a, b) => a - b);          // 중앙값 — 순간적인 옥타브 튐을 흡수
-    return [{ t0: 0, t1: raw.length / sr, midi: cands[cands.length >> 1] }];
+    cands.sort((a, b) => a.md - b.md);          // 중앙값 — 순간적인 옥타브 튐을 흡수
+    const pick = cands[cands.length >> 1];
+    return [{ t0: 0, t1: raw.length / sr, midi: pick.md, clarity: pick.cl }];
   }
 
   #humAnalyze() {
@@ -15595,13 +15615,33 @@ class App {
     const id = this.stepPendingId;
     const nt = id ? this.store.notes.find(n => n.id === id) : null;
     if (!nt) { this.#stepFlash('아직 잡힌 음이 없어요 — 「음~」 하고 불러 보세요'); return false; }
-    this.store.updateNote(id, { pending: false });
+    // ── 등록 직전에 한 번 더 잰다 ──
+    //  아직 소리를 끌고 있다면, 그 발성의 '안정된 뒷부분'만 모아 다시 반올림한다.
+    //  확정은 발성 시작 후 100ms 남짓에 일어나 어택이 섞이기 쉬운데, ✓ 를 누르는 시점에는
+    //  훨씬 긴 안정 구간이 쌓여 있다. 여기서 마지막으로 바로잡는다.
+    try {
+      const m = this.stepMic;
+      if (m && m.run && m.run.length >= 8) {
+        const tail = m.run.slice(4).sort((a, b) => a - b);
+        const mid = tail[tail.length >> 1];
+        const lo = tail[Math.floor((tail.length - 1) * 0.2)], hi = tail[Math.ceil((tail.length - 1) * 0.8)];
+        const spread = hi - lo;
+        if (spread < 1.1) {
+          const better = this.#stepQuantize(mid, m);
+          const cur = rowToMidi(nt.row);
+          if (better !== cur && Math.abs(better - cur) < 1.2) this.#stepSetPending(better);
+        }
+      }
+    } catch (_) {}
     this.stepStaged.push(id);
     this.stepPendingId = null;
     this._stepLastMidi = null;
-    // 다음 허밍은 완전히 새로 받는다
+    // 다음 허밍은 완전히 새로 받는다.
+    //  단, 여기서 armed 를 바로 열면 안 된다 — 사람은 소리를 끊기 전에 ✓ 를 누르므로
+    //  아직 나고 있는 그 소리가 곧바로 '다음 음'으로 잡혀 같은 음이 하나 더 붙는다.
+    //  무음을 한 번 확인한 뒤에야 다음 음을 받는다.
     const m = this.stepMic;
-    if (m) { m.armed = true; m.lastCommit = null; m.cand = null; m.count = 0; m.diff = 0; m.broke = true; }
+    if (m) { m.armed = false; m.needQuiet = 6; m.lastCommit = null; m.cand = null; m.count = 0; m.diff = 0; m.broke = true; }
     try { if (navigator.vibrate) navigator.vibrate(16); } catch (_) {}
     this.store.pingRender?.();
     this.#stepRenderStrip();
@@ -15617,8 +15657,9 @@ class App {
     this.stepPendingId = null;
     this._stepLastMidi = null;
     if (this.store.notes.some(n => n.id === id)) this.store.cancelLastAdd(id);
+    // 버린 직후에도 나던 소리가 그대로 다시 잡히지 않게 무음을 한 번 요구한다
     const m = this.stepMic;
-    if (m) { m.armed = true; m.lastCommit = null; m.cand = null; m.count = 0; m.diff = 0; m.broke = true; }
+    if (m) { m.armed = false; m.needQuiet = 4; m.lastCommit = null; m.cand = null; m.count = 0; m.diff = 0; m.broke = true; }
     this.store.pingRender?.();
     this.#stepRenderTuner();
     return true;
@@ -15690,6 +15731,27 @@ class App {
   }
   #stepOct(midi) { return Math.floor(midi / 12) - 1; }
 
+  // ── 소수 midi → 십이음계 정수 ──
+  //  그냥 Math.round 만 하면, 습관적으로 40센트쯤 낮게 부르는 사람은 모든 음이
+  //  아래 칸으로 넘어갈 준비가 된 상태가 된다(닫은 입 허밍은 대부분 살짝 낮다).
+  //  그래서 최근에 잡은 음들의 '반음 경계로부터의 치우침' 중앙값을 빼고 반올림한다.
+  //  ±0.35반음으로 묶어 폭주를 막고, 표본 4개가 모이기 전에는 보정하지 않는다.
+  #stepQuantize(value, m) {
+    if (!(value > 0)) return Math.round(value);
+    const h = (this._stepTuneDev = this._stepTuneDev || []);
+    let off = 0;
+    if (h.length >= 4) {
+      const s = h.slice().sort((a, b) => a - b);
+      off = s[s.length >> 1];
+      off = Math.max(-0.35, Math.min(0.35, off));
+    }
+    const midi = Math.round(value - off);
+    // 이번 값의 치우침을 표본에 넣는다(보정 전 원본 기준이라 되먹임이 없다)
+    const dev = value - Math.round(value);
+    if (Math.abs(dev) < 0.5) { h.push(dev); if (h.length > 16) h.shift(); }
+    return midi;
+  }
+
   // ── 허밍 듣기 시작 / 정지 — 이 버튼만 상태를 바꾼다 ──
   //  켜 두면 계속 듣다가, 같은 음이 잠깐 안정되면 그 자리에서 바로 확정한다.
   //  (허밍이 끝나길 기다리지 않는다 → 부르는 도중에 초록 음이 찍힌다)
@@ -15739,9 +15801,12 @@ class App {
       floor: null,
       blocks: [],          // 최근 블록들 — 합쳐서 검출 창으로 쓴다
       quiet: 0,
+      needQuiet: 3,        // 다음 한 음을 받기까지 필요한 무음 블록 수(등록 직후엔 늘린다)
+      run: [],             // 지금 이어지고 있는 발성 한 번의 판정값들(소수 midi) — 중앙값 재료
       cand: null,          // 지금 이어지고 있는 음(소수 midi)
       count: 0,            // 그 음이 이어진 판정 수
       diff: 0,             // 직전 확정음과 다른 음이 연속으로 이어진 판정 수
+      refineAt: 0,         // 마지막으로 대기 음을 다시 재본 시각
       broke: true,         // 직전 확정 이후 소리가 끊긴 적이 있는가
       armed: true,         // 지금 '새 한 음'을 받을 수 있는가
       lastCommit: null,
@@ -15771,9 +15836,11 @@ class App {
       if (rms < gate) {
         m.quiet++;
         // 잠깐이라도 끊기면 '다음 한 음'을 받을 수 있게 다시 열어 둔다
-        if (m.quiet >= 3) {
+        if (m.quiet >= (m.needQuiet || 3)) {
           m.armed = true; m.cand = null; m.count = 0; m.diff = 0; m.blocks.length = 0;
+          m.run.length = 0;   // 발성 한 번이 끝났다 — 중앙값 재료도 비운다
           m.broke = true;     // 소리가 한 번 끊겼다 = 다음 건 확실히 새로 부른 음
+          m.needQuiet = 3;    // 늘려 놨던 무음 요구는 여기서 원래대로
         }
         return;
       }
@@ -15802,29 +15869,62 @@ class App {
       //  128ms(6판정) 이상 계속 벗어나 있어야 '진짜 다음 음'으로 본다.
       if (!m.armed && m.lastCommit != null) {
         if (Math.abs(md - m.lastCommit) >= 1.2) m.diff++; else m.diff = 0;
-        if (m.diff >= 6) { m.armed = true; m.cand = null; m.count = 0; m.diff = 0; }
+        if (m.diff >= 6) { m.armed = true; m.cand = null; m.count = 0; m.diff = 0; m.run.length = 0; }
       }
-      if (m.cand == null || Math.abs(md - m.cand) > 0.7) { m.cand = md; m.count = 1; return; }
-      m.cand = m.cand * 0.55 + md * 0.45;
-      m.count++;
-      if (!m.armed) return;
+
+      // ── 발성 한 번의 판정값을 쌓아 둔다 ──
+      //  예전엔 지수평균(cand*0.55 + md*0.45)으로 눌러 담았는데, 이게 '낮게 잡히는' 원인이었다.
+      //  사람은 목표음보다 아래에서 미끄러져 올라온다(스쿱). 지수평균은 그 올라오는 구간을
+      //  값에 그대로 섞고, 게다가 구조적으로 한 박자 뒤처진다 → 늘 실제보다 낮다.
+      //  중앙값은 섞지 않고 '버린다'. 앞쪽 어택 프레임을 아예 빼고 재면 편향이 사라진다.
+      m.run.push(md);
+      if (m.run.length > 32) m.run.shift();
+      m.count = m.run.length;
 
       const now = performance.now();
-      const midi = Math.round(m.cand);
+      // 어택 구간(앞 4판정 ≈ 85ms)을 뺀 나머지의 중앙값 = 안정된 음높이
+      //  흔들림은 최댓값-최솟값이 아니라 20~80 백분위 폭으로 잰다.
+      //  최댓값-최솟값으로 재면 옥타브 튐이 단 한 프레임만 섞여도 폭이 12가 되어
+      //  '아직 불안정하다'로 판정되고, 그 발성은 영영 확정되지 않는다.
+      const steady = (arr) => {
+        const tail = arr.length > 6 ? arr.slice(4) : arr.slice(Math.max(0, arr.length - 3));
+        const s = tail.slice().sort((a, b) => a - b);
+        const lo = s[Math.floor((s.length - 1) * 0.2)], hi = s[Math.ceil((s.length - 1) * 0.8)];
+        return { mid: s[s.length >> 1], spread: hi - lo, n: s.length };
+      };
+      const st = steady(m.run);
+      m.cand = st.mid;
+
+      // ── 이미 대기 음이 올라간 상태에서 같은 소리를 계속 끌고 있으면, 다시 재서 고친다 ──
+      //  빠른 확정(피드백)과 정확한 값(스쿱이 끝난 뒤) 둘 다 얻기 위한 장치다.
+      //  새 음을 만드는 게 아니라 방금 만든 대기 음의 음높이만 바로잡는다(1.2반음 미만일 때만).
+      if (!m.armed) {
+        if (this.stepPendingId && m.run.length >= 8 && now - (m.refineAt || 0) > 70 && st.spread < 0.9) {
+          const better = this.#stepQuantize(st.mid, m);
+          if (better !== m.lastCommit && Math.abs(better - m.lastCommit) < 1.2) {
+            if (this.#stepSetPending(better)) { m.lastCommit = better; m.refineAt = now; }
+          } else m.refineAt = now;
+        }
+        return;
+      }
+
+      const midi = this.#stepQuantize(st.mid, m);
       const iv = (m.lastCommit == null) ? null : Math.abs(midi - m.lastCommit);
 
       // 옥타브(±12·±24) 오검출 방어: 검출기가 배음/기본음을 헷갈리면 딱 12의 배수만큼 튄다.
       //  방금 부른 음 직후에 정확히 옥타브 차이가 나오면 사람이 뛴 게 아니라 오검출로 본다.
       if (iv != null && now - (m.hitAt || 0) < 700) {
         const oct = Math.abs(iv - 12) < 0.6 || Math.abs(iv - 24) < 0.6;
-        if (oct) { m.cand = null; m.count = 0; return; }
+        if (oct) { m.run.length = 0; m.cand = null; m.count = 0; return; }
       }
       // 끊지 않고 이어 부른 경우, 같은 음이 또 찍히는 건 한 음이 쪼개진 것이다
-      if (!m.broke && iv != null && iv < 0.5) { m.cand = null; m.count = 0; return; }
-      // 확정에 필요한 판정 수를 '도약 폭'에 따라 다르게 — 부르기 어려운 간격일수록 더 확실해야 한다
+      if (!m.broke && iv != null && iv < 0.5) { m.run.length = 0; m.cand = null; m.count = 0; return; }
+      // 확정에 필요한 판정 수 — 검출기가 배음과 헷갈리는 간격일수록 더 본다
       //  끊지 않고 이어 부른 경우는 경계가 흐리므로 두 판정 더 본다
       const need = STEP_HOLD_FOR(iv) + (m.broke ? 0 : 2);
       if (m.count < need) return;
+      // 값이 아직 출렁이면(스쿱 한복판·비브라토 골) 확정하지 않는다
+      if (st.spread > 1.1) return;
       // 확정끼리 너무 촘촘하면 한 음이 쪼개진 것으로 본다
       if (m.hitAt && now - m.hitAt < 170) return;
 
@@ -15832,10 +15932,11 @@ class App {
       if (this.#stepSetPending(midi)) {
         m.armed = false;
         m.lastCommit = midi;
-        m.cand = null; m.count = 0; m.diff = 0; m.notes++;
+        m.cand = null; m.diff = 0; m.notes++;
         m.broke = false;
         m.hitAt = now;
-        m.blocks.length = 0;
+        m.refineAt = now;
+        // run 은 비우지 않는다 — 계속 끌고 있으면 위 '다시 재기'가 이 값을 바로잡는다
       }
     };
 
