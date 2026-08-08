@@ -15612,6 +15612,27 @@ class App {
     this.dom.stepClose?.addEventListener('click', () => this.#stepMicStop(true));
     this.dom.stepGo?.addEventListener('click', () => this.#stepMicStop(true));
     this.dom.stepFit?.addEventListener('click', () => { try { this.#stepRetune(); } catch (_) {} this.#stepFitKey(); });
+    // 튜너 패널 길게 누르기 → 진단 모드 (검출값·보정·놓인 음을 그대로 표시)
+    let dbgT = 0;
+    const dbgDown = () => { dbgT = setTimeout(() => {
+      this._stepDbg = !this._stepDbg;
+      if (this._stepDbg) { this._stepDbgReg = 0; }
+      this.#stepFlash(this._stepDbg ? '진단 모드 켬 (한 번 더 길게 눌러 끔)' : '진단 모드 끔');
+    }, 700); };
+    const dbgUp = () => { clearTimeout(dbgT); };
+    this.dom.stepTuner?.addEventListener('pointerdown', dbgDown);
+    this.dom.stepTuner?.addEventListener('pointerup', dbgUp);
+    this.dom.stepTuner?.addEventListener('pointercancel', dbgUp);
+    this.dom.stepTuner?.addEventListener('pointerleave', dbgUp);
+    // 진단 모드에서 ♪ 를 길게 누르면 보정/배치를 끄고 켠다
+    let offT = 0;
+    this.dom.stepFit?.addEventListener('pointerdown', () => { offT = setTimeout(() => {
+      if (!this._stepDbg) return;
+      if (!this._stepNoTune) { this._stepNoTune = true; this.#stepFlash('조율 보정 끔'); }
+      else if (!this._stepNoSnap) { this._stepNoSnap = true; this.#stepFlash('조율 보정 + 행 배치 끔'); }
+      else { this._stepNoTune = false; this._stepNoSnap = false; this.#stepFlash('전부 다시 켬'); }
+    }, 700); });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(e => this.dom.stepFit?.addEventListener(e, () => clearTimeout(offT)));
     this.#stepRenderCollect();
     this.#stepRenderStrip();
   }
@@ -15661,6 +15682,9 @@ class App {
 
   // 이 음높이가 놓일 줄 — 마디 코드 제약이 있으면 가장 가까운 허용 음으로 붙인다
   #stepRowFor(midi, beat) {
+    // 진단용: 접힌 행·코드 제약에 의한 이동을 건너뛰고 음높이 그대로 놓는다.
+    //  이걸 켰을 때 반음 어긋남이 사라지면 원인은 검출기가 아니라 '배치' 단계다.
+    if (this._stepNoSnap) return clampRow(midiToRow(midi));
     const bar = barOfBeat(beat);
     let row = nearestVisibleRow(this.viewport, midiToRow(midi), bar);
     if (rowAllowedIn(this.store.barChords, row, beat)) return row;
@@ -15766,6 +15790,7 @@ class App {
     // 이 음을 실제로 어느 높이로 불렀는지(소수 그대로) 기억해 둔다.
     // 나중에 [조 맞춤] 을 누르면 '반음 경계에 얼마나 걸쳐 있었나'를 보고 판단한다.
     if (this._stepPendRaw != null) { (this._stepRawById = this._stepRawById || {})[id] = this._stepPendRaw; this._stepPendRaw = null; }
+    this._stepDbgReg = (this._stepDbgReg || 0) + 1;
     this.#stepPreviewTone(rowToMidi(nt.row));   // 소리는 확정될 때 한 번만 낸다
     this.stepStaged.push(id);
     (this._stepSessionIds = this._stepSessionIds || []).push(id);
@@ -15915,6 +15940,7 @@ class App {
   //  다시 풀어 각 음의 기준 치우침을 정하고 어긋난 음만 옮긴다.
   //  (모의실험: 치우침 -30센트인 사람 기준 87.8% → 실시간 92.1% → 사후 95.4%)
   #stepRetune() {
+    if (this._stepNoTune) return 0;   // 진단용: 사후 조율 재정렬도 끔
     const ids = (this._stepSessionIds || []).filter(id => this.store.notes.some(n => n.id === id));
     if (ids.length < 3) return 0;
     const raws = ids.map(id => (this._stepRawById || {})[id]);
@@ -15947,8 +15973,9 @@ class App {
   #stepQuantize(value, record = false) {
     if (!(value > 0)) return Math.round(value);
     if (!this._stepOffCost) this._stepOffCost = tuneInit();
-    if (record) this._stepOffCost = tuneStepForward(this._stepOffCost, value);
     const naive = Math.round(value);
+    if (this._stepNoTune) return naive;                       // 진단용: 조율 보정 완전히 끔
+    if (record) this._stepOffCost = tuneStepForward(this._stepOffCost, value);
     if (Math.abs(value - naive) < TUNE_GUARD) return naive;   // 또렷하게 부른 음은 손대지 않는다
     return Math.round(value - tuneBest(this._stepOffCost));
   }
@@ -16168,6 +16195,10 @@ class App {
       }
 
       const midi = this.#stepQuantize(st.mid, false);
+      if (this._stepDbg) {
+        this._stepDbgInfo = { raw: st.mid, off: this.#stepTuneOff(), midi, run: m.run.length, win: useWin, gate,
+          placed: window.__stepGhost ? rowToMidi(window.__stepGhost.row) : null };
+      }
       const iv = (m.lastCommit == null) ? null : Math.abs(midi - m.lastCommit);
 
       // 옥타브(±12·±24) 오검출 방어: 검출기가 배음/기본음을 헷갈리면 딱 12의 배수만큼 튄다.
@@ -16288,9 +16319,24 @@ class App {
     const last = this._stepLastMidi;
     if (noteEl) noteEl.textContent = (last != null) ? (this.#stepNoteKo(last) + this.#stepOct(last)) : '듣는 중';
     if (centEl) {
-      centEl.textContent = m.notes
-        ? m.notes + '음 담겼어요 · 이어서 계속 불러 주세요'
-        : '「음~ 음~ 음~」 이어서 불러 주세요 · 음 사이는 살짝 끊고요';
+      // ── 진단 표시 ──
+      //  검출된 소수 음높이 → 조율 보정 → 반올림 → 실제로 놓인 행 까지를 그대로 보여준다.
+      //  어느 단계에서 어긋나는지 눈으로 확인하려는 것이다.
+      if (this._stepDbg) {
+        const d = this._stepDbgInfo || {};
+        centEl.textContent =
+          '검출 ' + (d.raw != null ? d.raw.toFixed(2) : '—') +
+          ' · 보정 ' + (d.off != null ? (d.off >= 0 ? '+' : '') + d.off.toFixed(2) : '—') +
+          ' → ' + (d.midi != null ? d.midi + '(' + this.#stepNoteKo(d.midi) + this.#stepOct(d.midi) + ')' : '—') +
+          ' → 놓인음 ' + (d.placed != null ? d.placed + '(' + this.#stepNoteKo(d.placed) + this.#stepOct(d.placed) + ')' : '—') +
+          ' | 길이' + (d.run || 0) + ' 창' + (d.win || 0) +
+          ' | 음량' + ((m.rms || 0) * 1000).toFixed(1) + ' 문턱' + ((d.gate || 0) * 1000).toFixed(1) +
+          ' | 등록' + (this._stepDbgReg || 0) + '회';
+      } else {
+        centEl.textContent = m.notes
+          ? m.notes + '음 담겼어요 · 이어서 계속 불러 주세요'
+          : '「음~ 음~ 음~」 이어서 불러 주세요 · 음 사이는 살짝 끊고요';
+      }
     }
     const lv = Math.max(0, Math.min(1, (m.rms || 0) * 7));
     if (needle) needle.style.width = (lv * 100).toFixed(0) + '%';
