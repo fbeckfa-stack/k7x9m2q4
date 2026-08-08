@@ -236,6 +236,10 @@ body.tab-compose .topbar{display:none;}
 .step-chip-oct{font-size:8.5px;font-weight:600;opacity:0.65;margin-left:1px;}
 .step-go-pill{flex-shrink:0;border:none;border-radius:11px;padding:8px 12px;background:#E9001E;color:#fff;
   font-family:inherit;font-size:11px;font-weight:800;letter-spacing:0.02em;cursor:pointer;}
+.step-fit-pill{flex-shrink:0;border:none;border-radius:11px;padding:8px 10px;background:#3B82F6;color:#fff;
+  font-size:12px;font-weight:700;margin-right:6px;}
+.step-fit-pill[disabled]{opacity:0.3;pointer-events:none;}
+.step-fit-pill:active{opacity:0.75;}
 .step-go-pill[disabled]{opacity:0.3;pointer-events:none;}
 .step-go-pill:active{opacity:0.75;}
 
@@ -2359,6 +2363,7 @@ body.tab-compose .page.compose .ctrl-bar .layer-step{justify-content:center;widt
       <!-- 시간 순으로 쌓인 음높이 목록 (칩을 누르면 그 음만 삭제) -->
       <div class="step-strip" id="stepStrip">
         <div class="step-strip-list" id="stepStripList"></div>
+        <button class="step-fit-pill" id="stepFit">♪ 조 맞춤</button>
         <button class="step-go-pill" id="stepGo">끝내기</button>
       </div>
 
@@ -2407,18 +2412,41 @@ const STEP_NOTE_LEN = 0.5;
 //  사람이 허밍으로 정확히 짚기 어려운 간격일수록 더 오래 확인한다.
 //  아예 막지 않는 이유: 막으면 제대로 불렀는데도 아무것도 안 찍혀 더 답답하다.
 //  대신 애매한 도약은 확신이 설 때까지 기다렸다가 찍는다(40~100ms 더 걸림).
+// 조성 프로파일(Krumhansl-Kessler) — 다 부른 뒤 '조 맞춤' 에 쓴다
+const KK_MAJ = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+const KK_MIN = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+// 음들의 조성을 추정해 '그 조에 속하는 음정 집합'을 돌려준다. 확신이 없으면 null.
+//  주의: 부르는 도중(앞부분 몇 음)에 부르면 엉뚱한 조가 나온다. 반드시 다 부른 뒤에 쓸 것.
+const guessKeySet = (midis) => {
+  if (!midis || midis.length < 6) return null;
+  const hist = new Array(12).fill(0);
+  for (const p of midis) hist[((p % 12) + 12) % 12]++;
+  let best = null, second = 0;
+  for (let r = 0; r < 12; r++) {
+    for (const prof of [KK_MAJ, KK_MIN]) {
+      let sc = 0;
+      for (let i = 0; i < 12; i++) sc += hist[(r + i) % 12] * prof[i];
+      if (!best || sc > best.sc) { if (best) second = Math.max(second, best.sc); best = { sc, r, minor: prof === KK_MIN }; }
+      else second = Math.max(second, sc);
+    }
+  }
+  if (!best || best.sc < second * 1.06) return null;   // 1·2위가 비슷하면 손대지 않는다
+  const SC = best.minor ? [0, 2, 3, 5, 7, 8, 10] : [0, 2, 4, 5, 7, 9, 11];
+  return new Set(SC.map(d => (best.r + d) % 12));
+};
+
 const STEP_HOLD_FOR = (iv) => {
-  if (iv == null) return 6;                       // 첫 음 — 비교할 직전 음이 없다
+  if (iv == null) return 4;                       // 첫 음 — 비교할 직전 음이 없다
   const a = Math.abs(iv);
   // 기준: '사람이 부르기 어려운 간격'이 아니라 '검출기가 틀리는 간격'이다.
   //  자기상관 계열은 배음/하위배음에 걸리면 딱 옥타브(12·24)나 완전5도+옥타브(19),
   //  그리고 2:3 락온으로 7반음만큼 튄다. 트라이톤·증2도는 검출기가 헷갈리는 값이 아니라
   //  사람이 음정을 못 맞추는 것뿐이고, 그건 오래 기다린다고 고쳐지지 않는다.
   const near = (x, t) => Math.abs(x - t) < 0.7;
-  if (near(a, 12) || near(a, 24) || near(a, 19)) return 9;   // 배음 오검출과 구분이 안 되는 값
+  if (near(a, 12) || near(a, 24) || near(a, 19)) return 7;   // 배음 오검출과 구분이 안 되는 값
   if (near(a, 7)) return 6;                                   // 2:3 락온으로도 나오는 값
-  if (a >= 13) return 7;                                      // 그 밖의 광폭 도약
-  return 6;                                                   // 나머지는 전부 동일하게
+  if (a >= 13) return 5;                                      // 그 밖의 광폭 도약
+  return 4;                                                   // 나머지는 전부 동일하게
 };
 const PITCH_COLORS = ['#E9001E','#FF6A00','#FFB300','#FFE000','#9ACD00','#22C55E','#00C2A8','#00B4D8','#2680FF','#5B5BFF','#9D4EDD','#E84BC9'];
 const PITCH_LABELS_KO = ['도','도#','레','레#','미','파','파#','솔','솔#','라','라#','시'];
@@ -5983,6 +6011,7 @@ class App {
       stepNo: document.getElementById('stepNo'),
       stepClose: document.getElementById('stepClose'),
       stepGo: document.getElementById('stepGo'),
+      stepFit: document.getElementById('stepFit'),
       stepTap: document.getElementById('stepTap'),
       stepTapHead: document.getElementById('stepTapHead'),
       stepTapNext: document.getElementById('stepTapNext'),
@@ -14583,7 +14612,9 @@ class App {
       const st = (n === 1) ? span : Math.round(span * (0.2 + 0.6 * k / (n - 1)));
       const w = sig.subarray(st, st + W);
       const mp = detectPitchMPM(w, dsSR);
-      const fy = detectPitchYIN(w, dsSR);
+      // MPM 이 아주 또렷하면 YIN 은 돌리지 않는다. 어차피 그 경우 MPM 값을 쓰므로
+      // 결과는 같고, 한 판정당 연산은 절반으로 준다(휴대폰에서 끊김이 줄어든다).
+      const fy = (mp.freq > 0 && mp.clarity >= 0.93) ? -1 : detectPitchYIN(w, dsSR);
       // ── 어느 쪽을 믿을지 ──
       //  예전엔 MPM 명료도가 0.9 미만이면 무조건 YIN 을 썼다. 그런데 소리가 약하거나
       //  숨이 섞이면 YIN 은 문턱(0.12) 아래 골짜기를 못 찾아 '전체 최솟값'으로 폴백하는데,
@@ -15494,6 +15525,7 @@ class App {
     // ✕ · [끝내기] : 허밍 끄기
     this.dom.stepClose?.addEventListener('click', () => this.#stepMicStop(true));
     this.dom.stepGo?.addEventListener('click', () => this.#stepMicStop(true));
+    this.dom.stepFit?.addEventListener('click', () => this.#stepFitKey());
     this.#stepRenderCollect();
     this.#stepRenderStrip();
   }
@@ -15633,11 +15665,15 @@ class App {
           const better = this.#stepQuantize(mid, true);
           const cur = rowToMidi(nt.row);
           if (better !== cur && Math.abs(better - cur) < 1.2) this.#stepSetPending(better);
+          // 이 음을 실제로 어느 높이로 불렀는지(소수 그대로) 기억해 둔다.
+          // 나중에 [조 맞춤] 을 누르면 '반음 경계에 얼마나 걸쳐 있었나'를 보고 판단한다.
+          (this._stepRawById = this._stepRawById || {})[id] = mid - this.#stepTuneOff();
         }
       }
     } catch (_) {}
     this.store.updateNote(id, { pending: false });   // 유령 → 정식 노트
     this.stepStaged.push(id);
+    (this._stepSessionIds = this._stepSessionIds || []).push(id);
     this.stepPendingId = null;
     this._stepLastMidi = null;
     // ✓ 를 사람이 직접 누른 경우에만 다음 음을 잠근다.
@@ -15742,15 +15778,54 @@ class App {
   //  ±0.35반음으로 묶어 폭주를 막고, 표본 4개가 모이기 전에는 보정하지 않는다.
   //  record=true 는 '이 값으로 실제 등록된다'는 뜻이다. 확정 전 시도나 보정 중간값까지
   //  표본에 넣으면 어택 한복판의 치우침이 섞여 보정치 자체가 낮아진다(첫 음이 낮게 나오던 원인).
+  // ── 다 부른 뒤 한꺼번에 조성에 맞추기 ──
+  //  부르는 도중에 하면 안 된다. 앞부분 몇 음만으로는 조성을 잘못 잡고, 한 번 옮긴 음이
+  //  다시 조성 추정에 들어가 오답을 스스로 강화한다(모의실험에서 정확도가 크게 떨어졌다).
+  //  다 부른 뒤 전체를 한 번에 보면 조성 추정이 훨씬 안정적이다.
+  #stepFitKey() {
+    const ids = (this._stepSessionIds || []).filter(id => this.store.notes.some(n => n.id === id));
+    if (ids.length < 6) { this.#stepFlash('조 맞춤은 6음 이상 부른 뒤에 쓸 수 있어요'); return false; }
+    const notes = ids.map(id => this.store.notes.find(n => n.id === id));
+    const midis = notes.map(n => rowToMidi(n.row));
+    const set = guessKeySet(midis);
+    if (!set) { this.#stepFlash('조성을 잡기 어려워요 — 그대로 두었어요'); return false; }
+    const raws = this._stepRawById || {};
+    let moved = 0;
+    notes.forEach((n, i) => {
+      const cur = midis[i];
+      if (set.has(((cur % 12) + 12) % 12)) return;        // 이미 조 안의 음
+      const raw = raws[n.id];
+      // 반음 한가운데를 또렷하게 부른 음은 의도적인 반음계로 보고 건드리지 않는다
+      if (raw != null && Math.abs(raw - Math.round(raw)) < 0.25) return;
+      let pick = null, bd = 1e9;
+      for (const d of [-1, 1, -2, 2]) {
+        const c = cur + d;
+        if (!set.has(((c % 12) + 12) % 12)) continue;
+        const dist = Math.abs((raw != null ? raw : cur) - c);
+        if (dist < bd) { bd = dist; pick = c; }
+      }
+      if (pick == null || bd > 0.85) return;
+      const bar = barOfBeat(n.beat);
+      const row = nearestVisibleRow(this.viewport, midiToRow(pick), bar);
+      if (row !== n.row) { this.store.updateNote(n.id, { row }); moved++; }
+    });
+    this.#stepFlash(moved ? moved + '음을 조에 맞춰 옮겼어요' : '옮길 음이 없었어요');
+    this.store.pingRender?.();
+    try { this.bus.emit('notes:changed'); } catch (_) {}
+    return moved > 0;
+  }
+
+  #stepTuneOff() {
+    const h = this._stepTuneDev || [];
+    if (h.length < 4) return 0;
+    const s = h.slice().sort((a, b) => a - b);
+    return Math.max(-0.35, Math.min(0.35, s[s.length >> 1]));
+  }
+
   #stepQuantize(value, record = false) {
     if (!(value > 0)) return Math.round(value);
     const h = (this._stepTuneDev = this._stepTuneDev || []);
-    let off = 0;
-    if (h.length >= 4) {
-      const s = h.slice().sort((a, b) => a - b);
-      off = s[s.length >> 1];
-      off = Math.max(-0.35, Math.min(0.35, off));
-    }
+    const off = this.#stepTuneOff();
     const midi = Math.round(value - off);
     if (record) {
       // 치우침은 보정 전 원본 기준으로 담는다(되먹임 방지)
@@ -15815,6 +15890,7 @@ class App {
       count: 0,            // 그 음이 이어진 판정 수
       diff: 0,             // 직전 확정음과 다른 음이 연속으로 이어진 판정 수
       refineAt: 0,         // 마지막으로 대기 음을 다시 재본 시각
+      peak: 0,             // 지금 발성의 최대 음량 — 끝부분(릴리스) 판별용
       broke: true,         // 직전 확정 이후 소리가 끊긴 적이 있는가
       armed: true,         // 지금 '새 한 음'을 받을 수 있는가
       lastCommit: null,
@@ -15823,7 +15899,9 @@ class App {
     };
 
     // 검출 창: 최근 blocks 를 합쳐 최소 0.08초 확보 (16kHz 로 내리면 1024 샘플 = 창 하나)
-    const NEED = Math.max(4, Math.ceil(m.sr * 0.08 / 1024));
+    this._stepSessionIds = [];
+    this._stepRawById = {};
+    const NEED = Math.max(3, Math.ceil(m.sr * 0.06 / 1024));
 
     sp.onaudioprocess = (ev) => {
       if (!m.listening) return;
@@ -15855,10 +15933,12 @@ class App {
           m.run.length = 0;   // 발성 한 번이 끝났다 — 중앙값 재료도 비운다
           m.broke = true;     // 소리가 한 번 끊겼다 = 다음 건 확실히 새로 부른 음
           m.needQuiet = 3;    // 늘려 놨던 무음 요구는 여기서 원래대로
+          m.peak = 0;         // 다음 발성의 음량을 새로 잰다
         }
         return;
       }
       m.quiet = 0;
+      m.peak = Math.max(m.peak, rms);
       m.blocks.push(blk);
       if (m.blocks.length > NEED) m.blocks.shift();
       if (m.blocks.length < NEED) return;
@@ -15874,7 +15954,14 @@ class App {
       });
       if (md == null) return;
 
-      // 끊지 않고 이어 불러도 반음 이상 달라지면 '다음 음'으로 본다
+      // ── 끝부분(릴리스) 이탈은 통째로 무시한다 ──
+      //  숨이 빠지면서 음정이 흘러내리는 구간이다. 소리가 끊기진 않으므로 무음 판정에도
+      //  안 걸리고, 그대로 두면 ①흘러내린 값이 중앙값을 끌어내리고 ②운 나쁘면 '다음 음'으로
+      //  잡혀 없는 음이 하나 더 생긴다. 음량이 그 발성의 최고점 대비 60% 아래로 떨어졌으면
+      //  이미 끝나고 있는 소리로 보고, 음정 판정에서 아예 제외한다.
+      //  (게이트 자체는 그대로라 무음 판정·자동 등록은 정상 동작한다)
+      if (m.peak > 0 && rms < m.peak * 0.6) return;
+
       // ── 끊지 않고 이어 부르다 음이 바뀐 경우 ──
       //  예전엔 '한 프레임'만 0.9반음 벗어나도 다음 음으로 열어 버렸다.
       //  비브라토 한 번이나 옥타브 오검출 한 프레임이면 한 음을 부르는데 두 음이 찍혔다.
@@ -15887,6 +15974,7 @@ class App {
           // 끊지 않고 이어 부르다 음이 바뀌었다 — 앞 음을 등록하고 다음 음으로 넘어간다
           if (this.stepPendingId) this.#stepRegisterPending(true);
           m.armed = true; m.cand = null; m.count = 0; m.diff = 0; m.run.length = 0;
+          m.peak = rms;   // 새 음이 시작됐다 — 음량 기준도 여기서 다시 잡는다
         }
       }
 
@@ -16065,6 +16153,10 @@ class App {
         list.appendChild(b);
       });
       list.scrollLeft = list.scrollWidth;
+    }
+    if (this.dom.stepFit) {
+      const k = (this._stepSessionIds || []).filter(id => this.store.notes.some(x => x.id === id)).length;
+      this.dom.stepFit.disabled = k < 6;
     }
     if (this.dom.stepGo) {
       this.dom.stepGo.disabled = n === 0;
