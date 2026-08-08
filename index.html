@@ -15790,8 +15790,15 @@ class App {
     try {
       const m = this.stepMic;
       if (m && m.run && m.run.length >= 8) {
-        // 등록 순간에는 발성의 뒤쪽 60% 만 본다 — 가장 안정된 구간이다
-        const tail = m.run.slice(Math.max(4, Math.floor(m.run.length * 0.4))).sort((a, b) => a - b);
+        // ── 등록 순간에는 발성의 '가운데'만 본다 ──
+        //  한 음은 [아래에서 올라오는 어택] → [안정] → [끝에서 흘러내리는 릴리스] 로 되어 있다.
+        //  앞만 버리고 뒤쪽을 쓰면 릴리스가 통째로 들어와 값이 아래로 끌린다.
+        //  (모의실험: 뒤쪽 60% 는 최대 -0.22반음 치우침, 가운데는 -0.05반음)
+        //  원래 조금 낮게 부르는 습관과 더해지면 이 치우침만으로 반음 경계를 넘는다.
+        const n0 = m.run.length;
+        const from = Math.max(4, Math.floor(n0 * 0.20));
+        const to = Math.max(from + 3, Math.floor(n0 * 0.75));
+        const tail = m.run.slice(from, to).sort((a, b) => a - b);
         const mid = tail[tail.length >> 1];
         const lo = tail[Math.floor((tail.length - 1) * 0.2)], hi = tail[Math.ceil((tail.length - 1) * 0.8)];
         const spread = hi - lo;
