@@ -2421,7 +2421,10 @@ const STEP_NOTE_LEN = 0.5;
 //  55센트 낮게 부른 음은 round 가 아래 칸으로 넘어가면서 dev 가 +45센트로 뒤집혀 기록된다.
 //  뒤집힌 값이 섞이면 중앙값이 0 쪽으로 끌려가 보정이 스스로 약해진다.
 //  아래 방식은 반올림 결과를 거치지 않고 격자와의 거리만 보므로 그 뒤집힘이 없다.
-const TUNE_OFFS = (() => { const a = []; for (let v = -0.60; v <= 0.6001; v += 0.02) a.push(+v.toFixed(3)); return a; })();
+// 범위는 반드시 반음의 절반(0.5)보다 좁아야 한다. 넓게 잡으면 +0.5 와 -0.5 가 격자에서
+//  구분되지 않아, 추적기가 프레이즈 전체를 반음 아래로 밀어버리는 해를 고른다(실제로 그랬다).
+const TUNE_OFFS = (() => { const a = []; for (let v = -0.35; v <= 0.3501; v += 0.02) a.push(+v.toFixed(3)); return a; })();
+const TUNE_GUARD = 0.28;   // 경계에서 이만큼 안쪽으로 또렷하게 부른 음은 추적기가 못 옮긴다
 const TUNE_MOVE = 12;    // 기준음이 갑자기 튀는 것에 대한 벌점(클수록 천천히 움직인다고 봄)
 const TUNE_PRIOR = 0.15; // 치우침이 0 에 가까울 것이라는 약한 사전 믿음
 const tuneEmit = (raw, off) => { const x = raw - off; const d = Math.abs(x - Math.round(x)); return d * d; };
@@ -2464,6 +2467,25 @@ const tuneViterbi = (raws) => {
   let bk = 0; for (let k = 1; k < K; k++) if (cost[(N - 1) * K + k] < cost[(N - 1) * K + bk]) bk = k;
   const out = new Array(N);
   for (let i = N - 1; i >= 0; i--) { out[i] = TUNE_OFFS[bk]; bk = prev[i * K + bk]; }
+  return out;
+};
+
+// 추적기 결과를 실제 음정으로 바꾸되, 두 가지 안전장치를 건다.
+//  ① 또렷하게 부른 음은 그냥 반올림 (추적기가 손대지 못함)
+//  ② 절반 가까운 음을 전부 같은 방향으로 옮겼다면 그건 보정이 아니라 '전체 반음 밀기'다.
+//     치우침이 반음 절반에 가까우면 위/아래가 원리적으로 구분되지 않아 이런 해가 나온다.
+//     그럴 땐 추적기를 통째로 버리고 그냥 반올림으로 돌아간다.
+const tuneApply = (raws, offs) => {
+  const nv = raws.map(r => Math.round(r));
+  const out = raws.map((r, i) => (Math.abs(r - nv[i]) < TUNE_GUARD) ? nv[i] : Math.round(r - offs[i]));
+  let mv = 0, dir = 0, mixed = false;
+  for (let i = 0; i < out.length; i++) {
+    const d = out[i] - nv[i];
+    if (!d) continue;
+    mv++;
+    if (!dir) dir = Math.sign(d); else if (Math.sign(d) !== dir) mixed = true;
+  }
+  if (!mixed && mv > out.length * 0.35) return nv;
   return out;
 };
 
@@ -15701,6 +15723,12 @@ class App {
   #stepRegisterPending(auto = false) {
     const nt = window.__stepGhost;
     if (!nt) { this.#stepFlash('지금 잡히는 음이 없어요 — 「음~」 하고 불러 보세요'); return false; }
+    // 자동 등록일 때, 너무 짧게 스친 소리는 음으로 치지 않는다.
+    //  숨소리·입술 잡음·문 닫히는 소리 같은 게 음으로 남는 걸 막는다.
+    if (auto) {
+      const m0 = this.stepMic;
+      if (m0 && m0.run && m0.run.length < 6) { window.__stepGhost = null; this.stepPendingId = null; this._stepLastMidi = null; this._stepDirty = true; return false; }
+    }
     // ── 등록 직전에 한 번 더 잰다 ──
     //  아직 소리를 끌고 있다면, 그 발성의 '안정된 뒷부분'만 모아 다시 반올림한다.
     //  확정은 발성 시작 후 100ms 남짓에 일어나 어택이 섞이기 쉬운데, ✓ 를 누르는 시점에는
@@ -15892,11 +15920,12 @@ class App {
     const raws = ids.map(id => (this._stepRawById || {})[id]);
     if (raws.some(r => r == null)) return 0;
     const offs = tuneViterbi(raws);
+    const wants = tuneApply(raws, offs);
     let moved = 0;
     ids.forEach((id, i) => {
       const n = this.store.notes.find(x => x.id === id);
       if (!n) return;
-      const want = Math.round(raws[i] - offs[i]);
+      const want = wants[i];
       if (!(want >= 21 && want <= 108)) return;
       const cur = rowToMidi(n.row);
       if (want === cur) return;
@@ -15919,6 +15948,8 @@ class App {
     if (!(value > 0)) return Math.round(value);
     if (!this._stepOffCost) this._stepOffCost = tuneInit();
     if (record) this._stepOffCost = tuneStepForward(this._stepOffCost, value);
+    const naive = Math.round(value);
+    if (Math.abs(value - naive) < TUNE_GUARD) return naive;   // 또렷하게 부른 음은 손대지 않는다
     return Math.round(value - tuneBest(this._stepOffCost));
   }
 
@@ -15971,13 +16002,15 @@ class App {
       floor: null,
       blocks: [],          // 최근 블록들 — 합쳐서 검출 창으로 쓴다
       quiet: 0,
-      needQuiet: 3,        // 다음 한 음을 받기까지 필요한 무음 블록 수(등록 직후엔 늘린다)
+      needQuiet: 4,        // 다음 한 음을 받기까지 필요한 무음 블록 수(등록 직후엔 늘린다)
       run: [],             // 지금 이어지고 있는 발성 한 번의 판정값들(소수 midi) — 중앙값 재료
       cand: null,          // 지금 이어지고 있는 음(소수 midi)
       count: 0,            // 그 음이 이어진 판정 수
       diff: 0,             // 직전 확정음과 다른 음이 연속으로 이어진 판정 수
       refineAt: 0,         // 마지막으로 대기 음을 다시 재본 시각
       peak: 0,             // 지금 발성의 최대 음량 — 끝부분(릴리스) 판별용
+      voiced: false,       // 지금 소리를 내는 중인가 (여닫이 문턱용)
+      qmin: null,          // 이번 무음 구간의 최저 음량 — 틈의 '깊이' 판별용
       broke: true,         // 직전 확정 이후 소리가 끊긴 적이 있는가
       armed: true,         // 지금 '새 한 음'을 받을 수 있는가
       lastCommit: null,
@@ -16005,13 +16038,21 @@ class App {
       //  예전엔 소리가 클 때도 바닥을 조금씩 끌어올려서, 끊지 않고 길게 부르면
       //  2초쯤 뒤 게이트가 목소리보다 높아져 인식이 통째로 멈췄다.
       if (m.floor == null) m.floor = rms;
-      const gate = Math.max(0.004, m.floor * 4);
-      if (rms < gate) m.floor = m.floor * 0.7 + rms * 0.3;
+      // ── 여닫이 문턱(히스테리시스) ──
+      //  문턱 하나로 여닫으면, 소리가 그 근처를 오르내릴 때 '끊겼다/다시 났다'가 반복된다.
+      //  그러면 한 음을 계속 부르는 중인데도 자동 등록이 여러 번 일어나 같은 음이 줄줄이 찍힌다.
+      //  그래서 열 때는 높게(×4), 이미 소리를 내는 중이면 낮게(×2.2) 잡아 쉽게 안 닫히게 한다.
+      const gOpen = Math.max(0.004, m.floor * 4);
+      const gClose = Math.max(0.0026, m.floor * 2.2);
+      const gate = m.voiced ? gClose : gOpen;
+      if (rms < gClose) m.floor = m.floor * 0.7 + rms * 0.3;
+      m.voiced = rms >= gate;
 
       if (rms < gate) {
         m.quiet++;
+        m.qmin = Math.min(m.qmin == null ? Infinity : m.qmin, rms);   // 이번 틈이 얼마나 깊었나
         // 잠깐이라도 끊기면 '다음 한 음'을 받을 수 있게 다시 열어 둔다
-        if (m.quiet >= (m.needQuiet || 3)) {
+        if (m.quiet >= (m.needQuiet || 4)) {
           // ── 연속 입력 ──
           //  한 음이 끝났다(소리가 끊겼다). 대기 중이던 초록 음을 여기서 자동으로 등록하고
           //  다음 음을 받는다. ✓ 를 사람이 누르는 대신 '음이 끝나는 순간'이 눌러 주는 셈이라,
@@ -16020,14 +16061,25 @@ class App {
           if (this.stepPendingId) this.#stepRegisterPending(true);
           m.armed = true; m.cand = null; m.count = 0; m.diff = 0; m.blocks.length = 0;
           m.run.length = 0;   // 발성 한 번이 끝났다 — 중앙값 재료도 비운다
-          m.broke = true;     // 소리가 한 번 끊겼다 = 다음 건 확실히 새로 부른 음
-          m.needQuiet = 3;    // 늘려 놨던 무음 요구는 여기서 원래대로
+          // '짧게 끊긴 것'과 '정말 끝난 것'을 구분한다.
+          //  broke=true 는 "다음에 같은 음이 와도 새 음으로 인정한다"는 뜻이다. 짧은 끊김에까지
+          //  이걸 켜면, 음량이 흔들려 잠깐 문턱 아래로 내려갈 때마다 같은 음이 새로 찍힌다.
+          //  그래서 확실히 길게 쉰 경우(약 130ms 이상)에만 켠다. 짧은 끊김 뒤 같은 음이 오면
+          //  이어 부르던 한 음으로 보고 합친다(다른 음이 오면 어차피 새 음으로 잡힌다).
+          //  길이만 보면 90ms 간격으로 일부러 반복한 같은 음까지 합쳐진다. 그래서 깊이도 본다.
+          //  진짜 음 사이의 틈은 잡음 바닥 근처까지 떨어지지만, 음량이 흔들려 생긴 골은
+          //  문턱을 살짝 밑돌 뿐이다. 둘 중 하나만 만족해도 '정말 끝난 것'으로 본다.
+          m.broke = (m.quiet >= 6) || (m.qmin < Math.max(0.0026, m.floor * 1.6));
+          m.needQuiet = 4;    // 늘려 놨던 무음 요구는 여기서 원래대로(약 85ms)
           m.peak = 0;         // 다음 발성의 음량을 새로 잰다
         }
         return;
       }
       m.quiet = 0;
-      m.peak = Math.max(m.peak, rms);
+      m.qmin = null;
+      // 최고점은 천천히 내려간다. 고정해 두면 길게 부르며 자연스럽게 작아질 때
+      // '릴리스'로 오인되어 판정이 통째로 멈춘다.
+      m.peak = Math.max(rms, m.peak * 0.995);
       // ── 음높이에 맞춰 듣는 시간을 줄인다 ──
       //  낮은 음은 한 주기가 길어 오래 들어야 하지만, 높은 음은 그럴 필요가 없다.
       //  기준은 '창 안에 최소 6주기'다. 512샘플(32ms)로 6주기를 채우려면 187Hz 이상이어야 하고,
