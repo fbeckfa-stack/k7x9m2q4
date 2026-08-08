@@ -5115,7 +5115,12 @@ class CanvasRenderer {
       if (c <= 0.9 && rZoom) { let s = (Math.round(c*100)/100).toFixed(2).replace(/0$/,''); if(!s.includes('.'))s+='.0'; return s; }
       return (Math.round(c*10)/10).toFixed(1);
     };
-    for (const n of this.#store.notes) {
+    // 허밍 유령 음은 스토어에 만들지 않고 '그릴 때만' 목록에 끼워 넣는다.
+    //  오디오 콜백에서 addNote/updateNote 를 부르지 않게 되어 되돌리기 기록이 깨끗해지고,
+    //  21ms 예산의 오디오 콜백이 캔버스 재그리기를 떠안지 않는다.
+    const ghost = window.__stepGhost || null;
+    const drawList = ghost ? [...this.#store.notes, ghost] : this.#store.notes;
+    for (const n of drawList) {
       if (!(n.len > 0)) continue;           // 길이 0(삭제 직전)인 노트는 그리지 않음
       // 화면 밖 노트는 통째로 건너뛴다 (마커/글자 계산까지 함께 절약)
       if (n.beat > beatTo || n.beat + n.len < beatFrom) continue;
@@ -14527,7 +14532,7 @@ class App {
     const onDone = opts.onDone || (() => {});
     // 단일음 모드: '멜로디(여러 음)'가 아니라 들린 소리 중 가장 또렷한 한 음만 잡는다.
     //  프레임 훑기·pYIN 후보·Viterbi·온셋 분절을 통째로 건너뛰므로 길이와 무관하게 고정 비용이다.
-    if (opts.single) { onDone(this.#humSingleNote(raw, sr, opts.windows || 5)); return; }
+    if (opts.single) { onDone(this.#humSingleNote(raw, sr, opts.windows || 5, opts.win || 1024)); return; }
     // 16kHz 근처로 다운샘플 — 피치 검출에 충분하고 4배 가까이 빨라진다.
     // 정밀 모드는 24kHz까지만 낮춰 고음(여성 목소리 등)의 주기 해상도를 더 남긴다.
     const targetSR = precise ? 24000 : 16000;
@@ -14596,11 +14601,15 @@ class App {
   //  안정 구간에서 창 몇 개만 뽑아 음정을 재고 중앙값을 취한다.
   //  창 하나는 64ms(16kHz·1024샘플)이므로 0.07초만 있어도 잡을 수 있다.
   //  반환 규격은 멜로디 모드와 같다: [{ t0, t1, midi }] (없으면 빈 배열)
-  #humSingleNote(raw, sr, K = 5) {
+  //  win: 분석 창 크기(내림 후 샘플 수). 기본 1024 = 16kHz 기준 64ms.
+  //   높은 음은 한 주기가 짧아 그만큼 오래 들을 필요가 없다. 400Hz 면 512샘플(32ms)에도
+  //   12주기가 들어와 충분하다. 호출한 쪽이 직전 음높이를 알면 창을 줄여 반응을 앞당길 수 있다.
+  //   낮은 음에 좁은 창을 쓰면 주기가 안 잡히므로, 줄이는 판단은 호출한 쪽 책임이다.
+  #humSingleNote(raw, sr, K = 5, win = 1024) {
     const ds = Math.max(1, Math.round(sr / 16000));
     const dsSR = sr / ds;
     const M = Math.floor(raw.length / ds);
-    const W = 1024;
+    const W = Math.min(win, 1024);
     if (M < W) return [];
     const sig = new Float32Array(M);
     for (let i = 0; i < M; i++) { let a = 0; const b = i * ds; for (let j = 0; j < ds; j++) a += raw[b + j]; sig[i] = a / ds; }
@@ -15588,48 +15597,37 @@ class App {
   }
 
   // 허밍으로 잡힌 음을 '대기'에 올린다. 이미 대기 중이면 그 음만 바꾼다.
+  //  유령 음은 '진짜 노트'가 아니다. 스토어에 넣지 않고 window.__stepGhost 에만 둔다.
+  //  그리기 루프가 이 객체를 목록 끝에 끼워 그려 주므로 화면은 예전과 똑같지만,
+  //  오디오 콜백에서는 addNote/updateNote/pingRender 가 전혀 일어나지 않는다.
+  //  (예전엔 음 하나에 되돌리기 기록이 3개씩 쌓여, 16음쯤 부르면 편집 기록이 밀려났다)
   #stepSetPending(midi) {
     if (!(midi >= 21 && midi <= 108)) return false;
-    const layer = this.store.currentLayer;
+    const g = window.__stepGhost;
 
-    // 이미 대기 중이면 자리는 그대로 두고 음높이만 갈아 끼운다
-    const cur = this.stepPendingId
-      ? this.store.notes.find(n => n.id === this.stepPendingId)
-      : null;
-    if (cur) {
-      const row = this.#stepRowFor(midi, cur.beat);
-      if (row !== cur.row) this.store.updateNote(cur.id, { row });
+    if (g) {   // 이미 떠 있으면 자리는 그대로 두고 음높이만 갈아 끼운다
+      const row = this.#stepRowFor(midi, g.beat);
+      if (row !== g.row) { g.row = row; this._stepDirty = true; }
       this._stepLastMidi = rowToMidi(row);
-      this.#stepPreviewTone(rowToMidi(row));
-      this.#stepReveal(this.store.notes.find(n => n.id === cur.id));
-      this.store.pingRender?.();
-      this.#stepRenderTuner();
       return true;
     }
 
+    const layer = this.store.currentLayer;
     const beat = this.#stepWriteBeat(layer);
     this.#ensureTotalBeats(beat + STEP_NOTE_LEN * 2);
     if (beat >= TIMING.TOTAL_BEATS) { this.#stepFlash('그리드 끝까지 찼어요'); return false; }
     const row = this.#stepRowFor(midi, beat);
 
-    this._stepStaging = true;   // 우리가 만든 것은 선택 대상이 되지 않게
-    let id = null;
-    try {
-      id = this.store.addNote({
-        row, beat,
-        len: Math.min(STEP_NOTE_LEN, TIMING.TOTAL_BEATS - beat),
-        inst: this.store.currentInstrument, velocity: 0.8, layer,
-        pending: true,
-      });
-    } finally { this._stepStaging = false; }
-    if (!id) return false;
-
-    this.stepPendingId = id;
+    window.__stepGhost = {
+      id: '__ghost__', row, beat,
+      len: Math.min(STEP_NOTE_LEN, TIMING.TOTAL_BEATS - beat),
+      inst: this.store.currentInstrument, velocity: 0.8, layer,
+      pending: true,
+    };
+    this.stepPendingId = '__ghost__';
     this._stepLastMidi = rowToMidi(row);
-    this.#stepPreviewTone(rowToMidi(row));
-    this.#stepReveal(this.store.notes.find(n => n.id === id));
-    this.store.pingRender?.();
-    this.#stepRenderTuner();
+    this._stepDirty = true;
+    this._stepRevealPending = true;
     return true;
   }
 
@@ -15646,8 +15644,7 @@ class App {
   //  auto=true 면 '음이 끝나서 자동으로 등록'하는 경우다(연속 입력).
   //  이때 다음 음을 받을 준비는 호출한 쪽이 이미 정하므로 여기서 검출기를 건드리지 않는다.
   #stepRegisterPending(auto = false) {
-    const id = this.stepPendingId;
-    const nt = id ? this.store.notes.find(n => n.id === id) : null;
+    const nt = window.__stepGhost;
     if (!nt) { this.#stepFlash('지금 잡히는 음이 없어요 — 「음~」 하고 불러 보세요'); return false; }
     // ── 등록 직전에 한 번 더 잰다 ──
     //  아직 소리를 끌고 있다면, 그 발성의 '안정된 뒷부분'만 모아 다시 반올림한다.
@@ -15665,17 +15662,30 @@ class App {
           const better = this.#stepQuantize(mid, true);
           const cur = rowToMidi(nt.row);
           if (better !== cur && Math.abs(better - cur) < 1.2) this.#stepSetPending(better);
-          // 이 음을 실제로 어느 높이로 불렀는지(소수 그대로) 기억해 둔다.
-          // 나중에 [조 맞춤] 을 누르면 '반음 경계에 얼마나 걸쳐 있었나'를 보고 판단한다.
-          (this._stepRawById = this._stepRawById || {})[id] = mid - this.#stepTuneOff();
+          this._stepPendRaw = mid - this.#stepTuneOff();
         }
       }
     } catch (_) {}
-    this.store.updateNote(id, { pending: false });   // 유령 → 정식 노트
-    this.stepStaged.push(id);
-    (this._stepSessionIds = this._stepSessionIds || []).push(id);
+    // ── 여기서 처음으로 진짜 노트를 만든다 (되돌리기 기록도 이때 한 번만 생긴다) ──
+    this._stepStaging = true;
+    let id = null;
+    try {
+      id = this.store.addNote({
+        row: nt.row, beat: nt.beat, len: nt.len,
+        inst: nt.inst, velocity: nt.velocity, layer: nt.layer,
+      });
+    } finally { this._stepStaging = false; }
+    window.__stepGhost = null;
     this.stepPendingId = null;
     this._stepLastMidi = null;
+    this._stepDirty = true;
+    if (!id) return false;
+    // 이 음을 실제로 어느 높이로 불렀는지(소수 그대로) 기억해 둔다.
+    // 나중에 [조 맞춤] 을 누르면 '반음 경계에 얼마나 걸쳐 있었나'를 보고 판단한다.
+    if (this._stepPendRaw != null) { (this._stepRawById = this._stepRawById || {})[id] = this._stepPendRaw; this._stepPendRaw = null; }
+    this.#stepPreviewTone(rowToMidi(nt.row));   // 소리는 확정될 때 한 번만 낸다
+    this.stepStaged.push(id);
+    (this._stepSessionIds = this._stepSessionIds || []).push(id);
     // ✓ 를 사람이 직접 누른 경우에만 다음 음을 잠근다.
     //  사람은 소리를 끊기 전에 누르므로, 바로 열어 두면 아직 나고 있는 그 소리가
     //  곧바로 '다음 음'으로 잡혀 같은 음이 하나 더 붙는다. 무음을 한 번 확인하고 받는다.
@@ -15692,11 +15702,11 @@ class App {
 
   // 대기 중인 음을 버린다 (등록 전이므로 그냥 지운다)
   #stepDropPending() {
-    const id = this.stepPendingId;
-    if (!id) return false;
+    if (!window.__stepGhost) return false;
+    window.__stepGhost = null;
     this.stepPendingId = null;
     this._stepLastMidi = null;
-    if (this.store.notes.some(n => n.id === id)) this.store.cancelLastAdd(id);
+    this._stepDirty = true;
     // 버린 직후에도 나던 소리가 그대로 다시 잡히지 않게 무음을 한 번 요구한다
     const m = this.stepMic;
     if (m) { m.armed = false; m.needQuiet = 4; m.lastCommit = null; m.cand = null; m.count = 0; m.diff = 0; m.broke = true; }
@@ -15901,6 +15911,7 @@ class App {
     // 검출 창: 최근 blocks 를 합쳐 최소 0.08초 확보 (16kHz 로 내리면 1024 샘플 = 창 하나)
     this._stepSessionIds = [];
     this._stepRawById = {};
+    window.__stepGhost = null; this._stepDirty = false; this._stepRevealPending = false;
     const NEED = Math.max(3, Math.ceil(m.sr * 0.06 / 1024));
 
     sp.onaudioprocess = (ev) => {
@@ -15939,17 +15950,29 @@ class App {
       }
       m.quiet = 0;
       m.peak = Math.max(m.peak, rms);
+      // ── 음높이에 맞춰 듣는 시간을 줄인다 ──
+      //  낮은 음은 한 주기가 길어 오래 들어야 하지만, 높은 음은 그럴 필요가 없다.
+      //  기준은 '창 안에 최소 6주기'다. 512샘플(32ms)로 6주기를 채우려면 187Hz 이상이어야 하고,
+      //  그게 대략 G3(미디 55)이다. 그 위로는 창을 절반으로 줄여도 검출력이 떨어지지 않는다
+      //  (합성 허밍 검증: 잡음 0.25 에서도 1024창과 차이 1%p 이내).
+      //  아직 아무 음도 못 잡았을 때는 음높이를 모르므로 안전하게 기본값을 쓴다.
+      const hint = (m.lastCommit != null) ? m.lastCommit : (m.run.length ? m.run[m.run.length - 1] : null);
+      const narrow = (hint != null && hint >= 55);      // G3(약 196Hz) 이상이면 좁은 창
+      const useWin = narrow ? 512 : 1024;
+      const useBlocks = narrow ? Math.max(2, Math.ceil(m.sr * 0.035 / 1024)) : NEED;
+
       m.blocks.push(blk);
       if (m.blocks.length > NEED) m.blocks.shift();
-      if (m.blocks.length < NEED) return;
+      if (m.blocks.length < useBlocks) return;
 
-      const win = new Float32Array(m.blocks.length * blk.length);
-      let off = 0; for (const c of m.blocks) { win.set(c, off); off += c.length; }
+      const src2 = m.blocks.slice(-useBlocks);
+      const win = new Float32Array(src2.length * blk.length);
+      let off = 0; for (const c of src2) { win.set(c, off); off += c.length; }
 
       // 허밍 탭과 같은 함수 · 단일음 모드 · 창 1개(실시간이라 가장 가벼운 설정)
       let md = null;
       this.#humAnalyzeBuffer(win, m.sr, {
-        single: true, windows: 1,
+        single: true, windows: 1, win: useWin,
         onDone: (segs) => { if (segs && segs.length) md = segs[0].midi; },
       });
       if (md == null) return;
@@ -16050,7 +16073,19 @@ class App {
     this.stepMic = m;
     this._stepLastMidi = null;
 
-    const tick = () => { if (!m.listening) return; this.#stepRenderTuner(); m.raf = requestAnimationFrame(tick); };
+    // 그리기는 오디오 콜백이 아니라 여기서 한다.
+    //  콜백은 _stepDirty 플래그만 세우고 즉시 빠져나가므로 21ms 예산을 넘길 일이 없다.
+    //  (예산을 넘기면 오디오 블록이 버려지고, 그만큼 판정이 통째로 사라져 오히려 느려진다)
+    const tick = () => {
+      if (!m.listening) return;
+      this.#stepRenderTuner();
+      if (this._stepDirty) {
+        this._stepDirty = false;
+        if (this._stepRevealPending) { this._stepRevealPending = false; this.#stepReveal(window.__stepGhost); }
+        this.store.pingRender?.();
+      }
+      m.raf = requestAnimationFrame(tick);
+    };
     m.raf = requestAnimationFrame(tick);
     try { if (navigator.vibrate) navigator.vibrate(12); } catch (_) {}
     this.#stepRefreshUI();
@@ -16072,6 +16107,7 @@ class App {
     try { m.stream?.getTracks().forEach(t => t.stop()); } catch (_) {}
     m.src = m.sp = m.zero = null; m.stream = null; m.blocks = [];
     this.stepMic = null;
+    window.__stepGhost = null;
     this.#stepDropPending();
     const done = (this.stepStaged || []).length;
     this.stepStaged = [];
