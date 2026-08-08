@@ -2363,6 +2363,7 @@ body.tab-compose .page.compose .ctrl-bar .layer-step{justify-content:center;widt
       <!-- 시간 순으로 쌓인 음높이 목록 (칩을 누르면 그 음만 삭제) -->
       <div class="step-strip" id="stepStrip">
         <div class="step-strip-list" id="stepStripList"></div>
+        <button class="step-fit-pill" id="stepSnd" style="background:#6B7280">🔇</button>
         <button class="step-fit-pill" id="stepFit">♪ 조 맞춤</button>
         <button class="step-go-pill" id="stepGo">끝내기</button>
       </div>
@@ -6094,6 +6095,7 @@ class App {
       stepClose: document.getElementById('stepClose'),
       stepGo: document.getElementById('stepGo'),
       stepFit: document.getElementById('stepFit'),
+      stepSnd: document.getElementById('stepSnd'),
       stepTap: document.getElementById('stepTap'),
       stepTapHead: document.getElementById('stepTapHead'),
       stepTapNext: document.getElementById('stepTapNext'),
@@ -15612,6 +15614,14 @@ class App {
     this.dom.stepClose?.addEventListener('click', () => this.#stepMicStop(true));
     this.dom.stepGo?.addEventListener('click', () => this.#stepMicStop(true));
     this.dom.stepFit?.addEventListener('click', () => { try { this.#stepRetune(); } catch (_) {} this.#stepFitKey(); });
+    this.dom.stepSnd?.addEventListener('click', () => {
+      this._stepPreviewOn = !this._stepPreviewOn;
+      this.dom.stepSnd.textContent = this._stepPreviewOn ? '🔈' : '🔇';
+      this.dom.stepSnd.style.background = this._stepPreviewOn ? '#22C55E' : '#6B7280';
+      this.#stepFlash(this._stepPreviewOn
+        ? '잡은 음을 소리로 들려줘요 — 이어폰을 쓰세요 (스피커면 그 소리를 다시 인식해요)'
+        : '소리 끔 · 진동으로만 알려요');
+    });
     // 튜너 패널 길게 누르기 → 진단 모드 (검출값·보정·놓인 음을 그대로 표시)
     let dbgT = 0;
     const dbgDown = () => { dbgT = setTimeout(() => {
@@ -15732,12 +15742,32 @@ class App {
     return true;
   }
 
+  //  ── 스피커 소리를 마이크가 되받는 문제 ──
+  //  미리듣기는 스피커로 나가고 마이크는 열려 있으며 에코 제거는 꺼져 있다(음정 정확도 때문).
+  //  그래서 아무 조치도 안 하면 '등록 → 소리 남 → 그 소리를 다시 음으로 인식 → 등록'이
+  //  끝없이 돈다. 이어폰을 안 쓰면 한 번 부른 음이 계속 반복해서 찍힌다.
+  //  대책: 소리가 나는 동안 + 잔향 여유만큼 마이크 판정을 통째로 막는다.
   #stepPreviewTone(midi) {
+    const m = this.stepMic;
+    // 녹음 중에는 기본적으로 소리를 내지 않는다.
+    //  악기 릴리스가 최대 1.4초(pad)라 그 시간만큼 마이크를 막으면 쓸 수가 없고,
+    //  막지 않으면 되먹임이 돈다. 진동으로만 알려 주는 게 유일하게 안전한 선택이다.
+    //  (이어폰을 쓰는 경우를 위해 🔈 버튼으로 켤 수 있다)
+    if (m && !this._stepPreviewOn) {
+      try { if (navigator.vibrate) navigator.vibrate(12); } catch (_) {}
+      return;
+    }
+    const DUR = 0.18;
     try {
       this.audio.triggerNow({
-        instrument: this.store.currentInstrument, midi, duration: 0.35, velocity: 0.9,
+        instrument: this.store.currentInstrument, midi, duration: DUR, velocity: 0.7,
       });
     } catch (_) {}
+    if (m) {
+      // 소리를 켠 경우엔 그 악기의 릴리스까지 마이크를 막는다
+      const rel = (INSTRUMENTS[this.store.currentInstrument]?.adsr?.release) || 0.4;
+      m.blankUntil = performance.now() + (DUR + rel) * 1000 + 120;
+    }
     try { if (navigator.vibrate) navigator.vibrate(10); } catch (_) {}
   }
 
@@ -16038,6 +16068,7 @@ class App {
       peak: 0,             // 지금 발성의 최대 음량 — 끝부분(릴리스) 판별용
       voiced: false,       // 지금 소리를 내는 중인가 (여닫이 문턱용)
       qmin: null,          // 이번 무음 구간의 최저 음량 — 틈의 '깊이' 판별용
+      blankUntil: 0,       // 이 시각까지는 마이크 판정을 막는다(미리듣기 되먹임 차단)
       broke: true,         // 직전 확정 이후 소리가 끊긴 적이 있는가
       armed: true,         // 지금 '새 한 음'을 받을 수 있는가
       lastCommit: null,
@@ -16059,6 +16090,13 @@ class App {
       let e2 = 0; for (let i = 0; i < blk.length; i++) e2 += blk[i] * blk[i];
       const rms = Math.sqrt(e2 / blk.length);
       m.rms = rms;
+
+      // 미리듣기가 울리는 동안은 아무 판정도 하지 않는다(스피커 소리를 자기 음으로 잡지 않게).
+      //  잡음 바닥도 갱신하지 않는다 — 스피커 소리로 바닥이 올라가면 그 뒤 목소리를 못 듣는다.
+      if (m.blankUntil && performance.now() < m.blankUntil) {
+        m.blocks.length = 0; m.run.length = 0; m.qmin = null; m.voiced = false;
+        return;
+      }
 
       // 잡음 바닥을 추적해 게이트를 환경에 맞춘다.
       //  중요: 바닥은 '조용한 구간에서만' 갱신한다.
