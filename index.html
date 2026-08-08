@@ -15614,6 +15614,15 @@ class App {
     this.dom.stepClose?.addEventListener('click', () => this.#stepMicStop(true));
     this.dom.stepGo?.addEventListener('click', () => this.#stepMicStop(true));
     this.dom.stepFit?.addEventListener('click', () => { try { this.#stepRetune(); } catch (_) {} this.#stepFitKey(); });
+    // 🔇 를 길게 누르면 '여린 음 걸러내기'를 켜고 끈다
+    let wkT = 0;
+    this.dom.stepSnd?.addEventListener('pointerdown', () => { wkT = setTimeout(() => {
+      this._stepWeakDrop = (this._stepWeakDrop === false);
+      this.#stepFlash(this._stepWeakDrop
+        ? '여린 음 걸러내기 켬 — 확신 없이 작게 부른 음은 넘겨요'
+        : '여린 음 걸러내기 끔 — 작게 부른 것도 전부 넣어요');
+    }, 700); });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(e => this.dom.stepSnd?.addEventListener(e, () => clearTimeout(wkT)));
     this.dom.stepSnd?.addEventListener('click', () => {
       this._stepPreviewOn = !this._stepPreviewOn;
       this.dom.stepSnd.textContent = this._stepPreviewOn ? '🔈' : '🔇';
@@ -15747,6 +15756,33 @@ class App {
   //  그래서 아무 조치도 안 하면 '등록 → 소리 남 → 그 소리를 다시 음으로 인식 → 등록'이
   //  끝없이 돈다. 이어폰을 안 쓰면 한 번 부른 음이 계속 반복해서 찍힌다.
   //  대책: 소리가 나는 동안 + 잔향 여유만큼 마이크 판정을 통째로 막는다.
+  // ── 확인음 ──
+  //  잡은 음을 그대로 들려주면 마이크가 그걸 다시 음으로 인식해 무한 반복이 된다.
+  //  그래서 '사람 귀에는 들리지만 검출기는 음으로 치지 않는' 소리를 쓴다.
+  //   · 49Hz(미디 31 부근) — 검출기 하한(MPM 65Hz / YIN 70Hz)보다 낮아 주파수가 안 잡힌다
+  //   · 45ms 로 짧고 감쇠가 빨라 주기성이 안 서므로 clarity 게이트에도 걸린다
+  //  거기에 더해 울리는 동안만 마이크 판정을 막는다(150ms — 악기 미리듣기와 달리 짧다).
+  //  ok=false 면 한 옥타브 더 낮고 짧게 — '들었지만 음으로 안 썼다'는 뜻.
+  #stepBlip(ok = true) {
+    const ctx = this.audio?.ctx, out = this.audio?.master;
+    if (!ctx || !out) return;
+    try {
+      if (ctx.state === 'suspended') ctx.resume();
+      const t = ctx.currentTime, dur = ok ? 0.045 : 0.03;
+      const osc = ctx.createOscillator(), g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(ok ? 49 : 36, t);
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(ok ? 0.5 : 0.3, t + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+      osc.connect(g); g.connect(out);
+      osc.start(t); osc.stop(t + dur + 0.02);
+    } catch (_) { return; }
+    const m = this.stepMic;
+    if (m) m.blankUntil = performance.now() + 150;
+    try { if (navigator.vibrate) navigator.vibrate(ok ? 12 : 6); } catch (_) {}
+  }
+
   #stepPreviewTone(midi) {
     const m = this.stepMic;
     // 녹음 중에는 기본적으로 소리를 내지 않는다.
@@ -15754,7 +15790,7 @@ class App {
     //  막지 않으면 되먹임이 돈다. 진동으로만 알려 주는 게 유일하게 안전한 선택이다.
     //  (이어폰을 쓰는 경우를 위해 🔈 버튼으로 켤 수 있다)
     if (m && !this._stepPreviewOn) {
-      try { if (navigator.vibrate) navigator.vibrate(12); } catch (_) {}
+      this.#stepBlip(true);   // 되먹임 없는 저음 확인음
       return;
     }
     const DUR = 0.18;
@@ -15774,6 +15810,11 @@ class App {
   // ✓ : 대기 중인 음을 실제 노트로 등록한다
   //  auto=true 면 '음이 끝나서 자동으로 등록'하는 경우다(연속 입력).
   //  이때 다음 음을 받을 준비는 호출한 쪽이 이미 정하므로 여기서 검출기를 건드리지 않는다.
+  #stepDiscardGhost() {
+    window.__stepGhost = null; this.stepPendingId = null;
+    this._stepLastMidi = null; this._stepDirty = true;
+  }
+
   #stepRegisterPending(auto = false) {
     const nt = window.__stepGhost;
     if (!nt) { this.#stepFlash('지금 잡히는 음이 없어요 — 「음~」 하고 불러 보세요'); return false; }
@@ -15781,7 +15822,30 @@ class App {
     //  숨소리·입술 잡음·문 닫히는 소리 같은 게 음으로 남는 걸 막는다.
     if (auto) {
       const m0 = this.stepMic;
-      if (m0 && m0.run && m0.run.length < 6) { window.__stepGhost = null; this.stepPendingId = null; this._stepLastMidi = null; this._stepDirty = true; return false; }
+      if (m0 && m0.run && m0.run.length < 6) { this.#stepDiscardGhost(); return false; }
+      // ── 상대적 강세로 '확신 없는 음' 걸러내기 ──
+      //  사람은 확신이 없으면 소리가 작아진다. 다만 음량 하나만 보면 위험하다:
+      //  낮은 음은 원래 작고, 일부러 여리게 부른 음도 있고, 마이크와의 거리도 변한다.
+      //  그래서 두 가지가 동시에 성립할 때만 버린다 —
+      //   ① 최근 음들의 중앙값 대비 음량이 32% 아래  ② 그 발성의 평균 신뢰도가 낮음
+      //  확신 없이 웅얼거린 소리는 음량과 주기성이 함께 떨어지지만,
+      //  일부러 여리게 부른 음은 작아도 주기성은 또렷하다. 이 차이로 가른다.
+      if (this._stepWeakDrop !== false && m0) {
+        const h = this._stepLoudHist || [];
+        const meanCl = m0.clN ? m0.clSum / m0.clN : 1;
+        if (h.length >= 3) {
+          const srt = h.slice().sort((a, b) => a - b);
+          const midLoud = srt[srt.length >> 1];
+          if (m0.peak < midLoud * 0.32 && meanCl < 0.62) {
+            this.#stepDiscardGhost();
+            this.#stepBlip(false);           // '들었지만 음으로 안 썼다'
+            this.#stepFlash('너무 여려서 넘겼어요 — 조금 또렷하게 불러 주세요');
+            return false;
+          }
+        }
+        (this._stepLoudHist = h).push(m0.peak);
+        if (h.length > 12) h.shift();
+      }
     }
     // ── 등록 직전에 한 번 더 잰다 ──
     //  아직 소리를 끌고 있다면, 그 발성의 '안정된 뒷부분'만 모아 다시 반올림한다.
@@ -16080,6 +16144,7 @@ class App {
       peak: 0,             // 지금 발성의 최대 음량 — 끝부분(릴리스) 판별용
       voiced: false,       // 지금 소리를 내는 중인가 (여닫이 문턱용)
       qmin: null,          // 이번 무음 구간의 최저 음량 — 틈의 '깊이' 판별용
+      clSum: 0, clN: 0,    // 이번 발성의 신뢰도 합/개수 — 평균 clarity 용
       blankUntil: 0,       // 이 시각까지는 마이크 판정을 막는다(미리듣기 되먹임 차단)
       broke: true,         // 직전 확정 이후 소리가 끊긴 적이 있는가
       armed: true,         // 지금 '새 한 음'을 받을 수 있는가
@@ -16093,6 +16158,7 @@ class App {
     this._stepRawById = {};
     window.__stepGhost = null; this._stepDirty = false; this._stepRevealPending = false;
     this._stepOffCost = tuneInit();
+    this._stepLoudHist = [];
     const NEED = Math.max(3, Math.ceil(m.sr * 0.06 / 1024));
 
     sp.onaudioprocess = (ev) => {
@@ -16138,6 +16204,7 @@ class App {
           if (this.stepPendingId) this.#stepRegisterPending(true);
           m.armed = true; m.cand = null; m.count = 0; m.diff = 0; m.blocks.length = 0;
           m.run.length = 0;   // 발성 한 번이 끝났다 — 중앙값 재료도 비운다
+          m.clSum = 0; m.clN = 0;
           // '짧게 끊긴 것'과 '정말 끝난 것'을 구분한다.
           //  broke=true 는 "다음에 같은 음이 와도 새 음으로 인정한다"는 뜻이다. 짧은 끊김에까지
           //  이걸 켜면, 음량이 흔들려 잠깐 문턱 아래로 내려갈 때마다 같은 음이 새로 찍힌다.
@@ -16177,12 +16244,14 @@ class App {
       let off = 0; for (const c of src2) { win.set(c, off); off += c.length; }
 
       // 허밍 탭과 같은 함수 · 단일음 모드 · 창 1개(실시간이라 가장 가벼운 설정)
-      let md = null;
+      let md = null, mdCl = 0;
       this.#humAnalyzeBuffer(win, m.sr, {
         single: true, windows: 1, win: useWin,
-        onDone: (segs) => { if (segs && segs.length) md = segs[0].midi; },
+        onDone: (segs) => { if (segs && segs.length) { md = segs[0].midi; mdCl = segs[0].clarity || 0; } },
       });
       if (md == null) return;
+      // 이 발성의 평균 신뢰도(주기성) — 확신 없이 부르면 여기가 먼저 떨어진다
+      m.clSum = (m.clSum || 0) + mdCl; m.clN = (m.clN || 0) + 1;
 
       // ── 끝부분(릴리스) 이탈은 통째로 무시한다 ──
       //  숨이 빠지면서 음정이 흘러내리는 구간이다. 소리가 끊기진 않으므로 무음 판정에도
@@ -16204,6 +16273,7 @@ class App {
           // 끊지 않고 이어 부르다 음이 바뀌었다 — 앞 음을 등록하고 다음 음으로 넘어간다
           if (this.stepPendingId) this.#stepRegisterPending(true);
           m.armed = true; m.cand = null; m.count = 0; m.diff = 0; m.run.length = 0;
+          m.clSum = 0; m.clN = 0;
           m.peak = rms;   // 새 음이 시작됐다 — 음량 기준도 여기서 다시 잡는다
         }
       }
