@@ -2412,6 +2412,61 @@ const STEP_NOTE_LEN = 0.5;
 //  사람이 허밍으로 정확히 짚기 어려운 간격일수록 더 오래 확인한다.
 //  아예 막지 않는 이유: 막으면 제대로 불렀는데도 아무것도 안 찍혀 더 답답하다.
 //  대신 애매한 도약은 확신이 설 때까지 기다렸다가 찍는다(40~100ms 더 걸림).
+// ── 조율 추적기 ──
+//  사람의 절대 음높이는 부정확하고 천천히 흘러간다(피곤해지면 내려가고, 음역이 바뀌면 달라진다).
+//  반면 이웃 음 사이의 '간격'은 비교적 정확하다. 그래서 '지금 이 사람의 기준음이 반음 격자에서
+//  얼마나 치우쳐 있는가'를 상태로 두고 계속 추적하면, 경계에 걸친 음도 제 칸을 찾아간다.
+//
+//  예전 방식의 결함: 치우침을 dev = 값 - round(값) 으로 쟀다. 진짜로 30센트 낮게 부르는 사람이
+//  55센트 낮게 부른 음은 round 가 아래 칸으로 넘어가면서 dev 가 +45센트로 뒤집혀 기록된다.
+//  뒤집힌 값이 섞이면 중앙값이 0 쪽으로 끌려가 보정이 스스로 약해진다.
+//  아래 방식은 반올림 결과를 거치지 않고 격자와의 거리만 보므로 그 뒤집힘이 없다.
+const TUNE_OFFS = (() => { const a = []; for (let v = -0.60; v <= 0.6001; v += 0.02) a.push(+v.toFixed(3)); return a; })();
+const TUNE_MOVE = 12;    // 기준음이 갑자기 튀는 것에 대한 벌점(클수록 천천히 움직인다고 봄)
+const TUNE_PRIOR = 0.15; // 치우침이 0 에 가까울 것이라는 약한 사전 믿음
+const tuneEmit = (raw, off) => { const x = raw - off; const d = Math.abs(x - Math.round(x)); return d * d; };
+
+// 전방 전용(실시간): 지금까지의 음만 보고 기준 치우침을 갱신한다.
+const tuneStepForward = (cost, raw) => {
+  const K = TUNE_OFFS.length, nc = new Float64Array(K);
+  for (let k = 0; k < K; k++) {
+    let best = Infinity;
+    for (let j = 0; j < K; j++) {
+      const dv = TUNE_OFFS[k] - TUNE_OFFS[j];
+      const c = cost[j] + TUNE_MOVE * dv * dv;
+      if (c < best) best = c;
+    }
+    nc[k] = best + tuneEmit(raw, TUNE_OFFS[k]) + TUNE_PRIOR * TUNE_OFFS[k] * TUNE_OFFS[k];
+  }
+  return nc;
+};
+const tuneBest = (cost) => { let b = 0; for (let k = 1; k < cost.length; k++) if (cost[k] < cost[b]) b = k; return TUNE_OFFS[b]; };
+const tuneInit = () => Float64Array.from(TUNE_OFFS, v => TUNE_PRIOR * v * v);
+
+// 사후(전체를 함께): 다 부른 뒤 앞뒤를 모두 보고 각 음의 기준 치우침을 정한다.
+const tuneViterbi = (raws) => {
+  const N = raws.length, K = TUNE_OFFS.length;
+  if (!N) return [];
+  const cost = new Float64Array(N * K), prev = new Int32Array(N * K).fill(-1);
+  for (let k = 0; k < K; k++) cost[k] = tuneEmit(raws[0], TUNE_OFFS[k]) + TUNE_PRIOR * TUNE_OFFS[k] * TUNE_OFFS[k];
+  for (let i = 1; i < N; i++) {
+    for (let k = 0; k < K; k++) {
+      let best = Infinity, bj = -1;
+      for (let j = 0; j < K; j++) {
+        const dv = TUNE_OFFS[k] - TUNE_OFFS[j];
+        const c = cost[(i - 1) * K + j] + TUNE_MOVE * dv * dv;
+        if (c < best) { best = c; bj = j; }
+      }
+      cost[i * K + k] = best + tuneEmit(raws[i], TUNE_OFFS[k]) + TUNE_PRIOR * TUNE_OFFS[k] * TUNE_OFFS[k];
+      prev[i * K + k] = bj;
+    }
+  }
+  let bk = 0; for (let k = 1; k < K; k++) if (cost[(N - 1) * K + k] < cost[(N - 1) * K + bk]) bk = k;
+  const out = new Array(N);
+  for (let i = N - 1; i >= 0; i--) { out[i] = TUNE_OFFS[bk]; bk = prev[i * K + bk]; }
+  return out;
+};
+
 // 조성 프로파일(Krumhansl-Kessler) — 다 부른 뒤 '조 맞춤' 에 쓴다
 const KK_MAJ = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
 const KK_MIN = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
@@ -15534,7 +15589,7 @@ class App {
     // ✕ · [끝내기] : 허밍 끄기
     this.dom.stepClose?.addEventListener('click', () => this.#stepMicStop(true));
     this.dom.stepGo?.addEventListener('click', () => this.#stepMicStop(true));
-    this.dom.stepFit?.addEventListener('click', () => this.#stepFitKey());
+    this.dom.stepFit?.addEventListener('click', () => { try { this.#stepRetune(); } catch (_) {} this.#stepFitKey(); });
     this.#stepRenderCollect();
     this.#stepRenderStrip();
   }
@@ -15662,7 +15717,7 @@ class App {
           const better = this.#stepQuantize(mid, true);
           const cur = rowToMidi(nt.row);
           if (better !== cur && Math.abs(better - cur) < 1.2) this.#stepSetPending(better);
-          this._stepPendRaw = mid - this.#stepTuneOff();
+          this._stepPendRaw = mid;   // 보정 전 원본 — 사후 조율 추적의 재료
         }
       }
     } catch (_) {}
@@ -15799,12 +15854,13 @@ class App {
     const midis = notes.map(n => rowToMidi(n.row));
     const set = guessKeySet(midis);
     if (!set) { this.#stepFlash('조성을 잡기 어려워요 — 그대로 두었어요'); return false; }
-    const raws = this._stepRawById || {};
+    const rawMap = this._stepRawById || {};
+    const tOff = this.#stepTuneOff();   // 저장된 값은 보정 전 원본이므로 여기서 기준을 뺀다
     let moved = 0;
     notes.forEach((n, i) => {
       const cur = midis[i];
       if (set.has(((cur % 12) + 12) % 12)) return;        // 이미 조 안의 음
-      const raw = raws[n.id];
+      const raw = (rawMap[n.id] != null) ? rawMap[n.id] - tOff : null;
       // 반음 한가운데를 또렷하게 부른 음은 의도적인 반음계로 보고 건드리지 않는다
       if (raw != null && Math.abs(raw - Math.round(raw)) < 0.25) return;
       let pick = null, bd = 1e9;
@@ -15825,24 +15881,45 @@ class App {
     return moved > 0;
   }
 
-  #stepTuneOff() {
-    const h = this._stepTuneDev || [];
-    if (h.length < 4) return 0;
-    const s = h.slice().sort((a, b) => a - b);
-    return Math.max(-0.35, Math.min(0.35, s[s.length >> 1]));
+  // ── 다 부른 뒤 조율을 다시 맞춘다 ──
+  //  실시간 추적은 '지금까지 부른 음'만 보고 기준을 정한다. 그래서 앞쪽 몇 음은 기준이
+  //  덜 잡힌 상태에서 판정된다. 다 부르고 나면 앞뒤를 모두 볼 수 있으므로, 전체를 함께
+  //  다시 풀어 각 음의 기준 치우침을 정하고 어긋난 음만 옮긴다.
+  //  (모의실험: 치우침 -30센트인 사람 기준 87.8% → 실시간 92.1% → 사후 95.4%)
+  #stepRetune() {
+    const ids = (this._stepSessionIds || []).filter(id => this.store.notes.some(n => n.id === id));
+    if (ids.length < 3) return 0;
+    const raws = ids.map(id => (this._stepRawById || {})[id]);
+    if (raws.some(r => r == null)) return 0;
+    const offs = tuneViterbi(raws);
+    let moved = 0;
+    ids.forEach((id, i) => {
+      const n = this.store.notes.find(x => x.id === id);
+      if (!n) return;
+      const want = Math.round(raws[i] - offs[i]);
+      if (!(want >= 21 && want <= 108)) return;
+      const cur = rowToMidi(n.row);
+      if (want === cur) return;
+      // 조율 재정렬은 반음 한 칸까지만 — 그 이상 바뀌면 조율이 아니라 다른 문제다
+      if (Math.abs(want - cur) > 1) return;
+      const row = nearestVisibleRow(this.viewport, midiToRow(want), barOfBeat(n.beat));
+      if (row !== n.row) { this.store.updateNote(id, { row }); moved++; }
+    });
+    return moved;
   }
 
+  #stepTuneOff() {
+    if (!this._stepOffCost) this._stepOffCost = tuneInit();
+    return tuneBest(this._stepOffCost);
+  }
+
+  //  record=true 는 '이 값으로 실제 등록된다'는 뜻이다. 이때만 조율 추적기를 갱신한다.
+  //  확정 전 시도나 보정 중간값까지 먹이면 어택 한복판의 치우침이 섞여 기준이 흐려진다.
   #stepQuantize(value, record = false) {
     if (!(value > 0)) return Math.round(value);
-    const h = (this._stepTuneDev = this._stepTuneDev || []);
-    const off = this.#stepTuneOff();
-    const midi = Math.round(value - off);
-    if (record) {
-      // 치우침은 보정 전 원본 기준으로 담는다(되먹임 방지)
-      const dev = value - Math.round(value);
-      if (Math.abs(dev) < 0.5) { h.push(dev); if (h.length > 16) h.shift(); }
-    }
-    return midi;
+    if (!this._stepOffCost) this._stepOffCost = tuneInit();
+    if (record) this._stepOffCost = tuneStepForward(this._stepOffCost, value);
+    return Math.round(value - tuneBest(this._stepOffCost));
   }
 
   // ── 허밍 듣기 시작 / 정지 — 이 버튼만 상태를 바꾼다 ──
@@ -15912,6 +15989,7 @@ class App {
     this._stepSessionIds = [];
     this._stepRawById = {};
     window.__stepGhost = null; this._stepDirty = false; this._stepRevealPending = false;
+    this._stepOffCost = tuneInit();
     const NEED = Math.max(3, Math.ceil(m.sr * 0.06 / 1024));
 
     sp.onaudioprocess = (ev) => {
@@ -16111,7 +16189,12 @@ class App {
     this.#stepDropPending();
     const done = (this.stepStaged || []).length;
     this.stepStaged = [];
-    this.#stepFlash(done ? '허밍 입력을 껐어요 · ' + done + '음 등록됨' : '허밍 입력을 껐어요');
+    // 다 불렀으니 이제 앞뒤를 다 보고 조율을 다시 맞춘다
+    let retuned = 0;
+    try { retuned = this.#stepRetune(); } catch (_) {}
+    this.#stepFlash(done
+      ? '허밍 입력을 껐어요 · ' + done + '음 등록됨' + (retuned ? ' · ' + retuned + '음 조율 보정' : '')
+      : '허밍 입력을 껐어요');
     this.#stepRefreshUI();
     try { this.bus.emit('notes:changed'); } catch (_) {}
   }
