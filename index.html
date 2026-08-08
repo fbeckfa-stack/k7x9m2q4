@@ -15638,9 +15638,9 @@ class App {
     let offT = 0;
     this.dom.stepFit?.addEventListener('pointerdown', () => { offT = setTimeout(() => {
       if (!this._stepDbg) return;
-      if (!this._stepNoTune) { this._stepNoTune = true; this.#stepFlash('조율 보정 끔'); }
-      else if (!this._stepNoSnap) { this._stepNoSnap = true; this.#stepFlash('조율 보정 + 행 배치 끔'); }
-      else { this._stepNoTune = false; this._stepNoSnap = false; this.#stepFlash('전부 다시 켬'); }
+      if (this._stepNoTune !== false && !this._stepNoSnap) { this._stepNoSnap = true; this.#stepFlash('행 배치(접힌 행·코드 제약)도 끔'); }
+      else if (this._stepNoTune !== false) { this._stepNoTune = false; this._stepNoSnap = false; this.#stepFlash('조율 보정 켬 (실험)'); }
+      else { this._stepNoTune = true; this._stepNoSnap = false; this.#stepFlash('기본 — 가장 가까운 반음으로만'); }
     }, 700); });
     ['pointerup', 'pointercancel', 'pointerleave'].forEach(e => this.dom.stepFit?.addEventListener(e, () => clearTimeout(offT)));
     this.#stepRenderCollect();
@@ -15796,8 +15796,8 @@ class App {
         //  (모의실험: 뒤쪽 60% 는 최대 -0.22반음 치우침, 가운데는 -0.05반음)
         //  원래 조금 낮게 부르는 습관과 더해지면 이 치우침만으로 반음 경계를 넘는다.
         const n0 = m.run.length;
-        const from = Math.max(4, Math.floor(n0 * 0.20));
-        const to = Math.max(from + 3, Math.floor(n0 * 0.75));
+        const from = Math.max(3, Math.floor(n0 * 0.20));
+        const to = Math.max(from + 3, Math.floor(n0 * 0.65));
         const tail = m.run.slice(from, to).sort((a, b) => a - b);
         const mid = tail[tail.length >> 1];
         const lo = tail[Math.floor((tail.length - 1) * 0.2)], hi = tail[Math.ceil((tail.length - 1) * 0.8)];
@@ -15977,7 +15977,7 @@ class App {
   //  다시 풀어 각 음의 기준 치우침을 정하고 어긋난 음만 옮긴다.
   //  (모의실험: 치우침 -30센트인 사람 기준 87.8% → 실시간 92.1% → 사후 95.4%)
   #stepRetune() {
-    if (this._stepNoTune) return 0;   // 진단용: 사후 조율 재정렬도 끔
+    if (this._stepNoTune !== false) return 0;   // 조율 보정이 꺼져 있으면 사후 재정렬도 안 한다
     const ids = (this._stepSessionIds || []).filter(id => this.store.notes.some(n => n.id === id));
     if (ids.length < 3) return 0;
     const raws = ids.map(id => (this._stepRawById || {})[id]);
@@ -16010,8 +16010,13 @@ class App {
   #stepQuantize(value, record = false) {
     if (!(value > 0)) return Math.round(value);
     if (!this._stepOffCost) this._stepOffCost = tuneInit();
+    // ── 기본은 '잰 값을 가장 가까운 반음으로' 뿐이다 ──
+    //  조율 추적기(사용자의 습관적 치우침을 배워 빼주는 층)는 기본으로 끈다.
+    //  이 층은 측정에 다른 치우침이 있을 때 그걸 상쇄하며 맞는 것처럼 보이다가,
+    //  측정을 고치는 순간 반대 방향으로 밀어버린다(실제로 그렇게 됐다).
+    //  보정층을 쌓기 전에 측정 자체가 정확해야 한다.
     const naive = Math.round(value);
-    if (this._stepNoTune) return naive;                       // 진단용: 조율 보정 완전히 끔
+    if (this._stepNoTune !== false) return naive;
     if (record) this._stepOffCost = tuneStepForward(this._stepOffCost, value);
     if (Math.abs(value - naive) < TUNE_GUARD) return naive;   // 또렷하게 부른 음은 손대지 않는다
     return Math.round(value - tuneBest(this._stepOffCost));
@@ -16321,7 +16326,7 @@ class App {
     let retuned = 0;
     try { retuned = this.#stepRetune(); } catch (_) {}
     this.#stepFlash(done
-      ? '허밍 입력을 껐어요 · ' + done + '음 등록됨' + (retuned ? ' · ' + retuned + '음 조율 보정' : '')
+      ? '허밍 입력을 껐어요 · ' + done + '음 등록됨' + (retuned ? ' · ' + retuned + '음 보정' : '')
       : '허밍 입력을 껐어요');
     this.#stepRefreshUI();
     try { this.bus.emit('notes:changed'); } catch (_) {}
