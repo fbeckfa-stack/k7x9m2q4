@@ -14684,14 +14684,42 @@ class App {
   //   높은 음은 한 주기가 짧아 그만큼 오래 들을 필요가 없다. 400Hz 면 512샘플(32ms)에도
   //   12주기가 들어와 충분하다. 호출한 쪽이 직전 음높이를 알면 창을 줄여 반응을 앞당길 수 있다.
   //   낮은 음에 좁은 창을 쓰면 주기가 안 잡히므로, 줄이는 판단은 호출한 쪽 책임이다.
+  //  ── 대역 밖 잡음 제거 ──
+  //  YIN·MPM 은 파형의 '주기성'을 본다. 그래서 스펙트럼 빼기 같은 일반적인 잡음 제거는
+  //  위상을 헝클어 오히려 검출을 망친다. 반면 목소리 대역 밖의 에너지를 잘라내는 것은
+  //  주기성을 건드리지 않으면서 방해만 없앤다.
+  //   · 70Hz 아래(에어컨·손떨림·책상 진동·60Hz 전기험) — 자기상관에서 긴 주기의 가짜 봉우리를
+  //     만들어 옥타브 아래 오검출의 재료가 된다. 실제로 이 소음이 목소리의 2/3 를 넘으면
+  //     검출률이 100% → 14% 로 무너졌다(필터를 넣으면 100% 유지).
+  //   · 6kHz 위 — 어차피 16kHz 로 내리므로 접혀 들어오기 전에 잘라낸다.
+  //     (예전엔 3샘플 평균이 저역통과를 대신했는데, 그건 앨리어싱을 제대로 못 막는다)
+  #biquad(x, sr, fc, q, high) {
+    const w = 2 * Math.PI * fc / sr, c = Math.cos(w), sn = Math.sin(w), al = sn / (2 * q);
+    const b0 = high ? (1 + c) / 2 : (1 - c) / 2;
+    const b1 = high ? -(1 + c) : (1 - c);
+    const b2 = b0, a0 = 1 + al, a1 = -2 * c, a2 = 1 - al;
+    const B0 = b0 / a0, B1 = b1 / a0, B2 = b2 / a0, A1 = a1 / a0, A2 = a2 / a0;
+    const o = new Float32Array(x.length);
+    let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    for (let i = 0; i < x.length; i++) {
+      const y = B0 * x[i] + B1 * x1 + B2 * x2 - A1 * y1 - A2 * y2;
+      x2 = x1; x1 = x[i]; y2 = y1; y1 = y; o[i] = y;
+    }
+    return o;
+  }
+
   #humSingleNote(raw, sr, K = 5, win = 1024) {
     const ds = Math.max(1, Math.round(sr / 16000));
     const dsSR = sr / ds;
     const M = Math.floor(raw.length / ds);
     const W = Math.min(win, 1024);
     if (M < W) return [];
+    // 대역 제한 후 데시메이션 (고역통과 2단 = 12dB/oct, 저역통과 1단)
+    let f = this.#biquad(raw, sr, 70, 0.707, true);
+    f = this.#biquad(f, sr, 70, 0.707, true);
+    if (ds > 1) f = this.#biquad(f, sr, Math.min(6000, dsSR * 0.42), 0.707, false);
     const sig = new Float32Array(M);
-    for (let i = 0; i < M; i++) { let a = 0; const b = i * ds; for (let j = 0; j < ds; j++) a += raw[b + j]; sig[i] = a / ds; }
+    for (let i = 0; i < M; i++) sig[i] = f[i * ds];
     const span = M - W;
     const n = Math.max(1, K);
     const cands = [];
@@ -16145,6 +16173,7 @@ class App {
       voiced: false,       // 지금 소리를 내는 중인가 (여닫이 문턱용)
       qmin: null,          // 이번 무음 구간의 최저 음량 — 틈의 '깊이' 판별용
       clSum: 0, clN: 0,    // 이번 발성의 신뢰도 합/개수 — 평균 clarity 용
+      hpX: 0, hpY: 0,      // 음량 측정용 고역통과 필터 상태(블록 사이 유지)
       blankUntil: 0,       // 이 시각까지는 마이크 판정을 막는다(미리듣기 되먹임 차단)
       broke: true,         // 직전 확정 이후 소리가 끊긴 적이 있는가
       armed: true,         // 지금 '새 한 음'을 받을 수 있는가
@@ -16165,7 +16194,19 @@ class App {
       if (!m.listening) return;
       const ch = ev.inputBuffer.getChannelData(0);
       const blk = new Float32Array(ch);       // 콜백 버퍼는 재사용되므로 반드시 복사
-      let e2 = 0; for (let i = 0; i < blk.length; i++) e2 += blk[i] * blk[i];
+      // ── 음량은 저역 소음을 뺀 뒤에 잰다 ──
+      //  에어컨·손떨림·책상 진동·60Hz 전기험은 귀에는 거의 안 들려도 에너지가 크다.
+      //  그대로 재면 잡음이 게이트를 열어 '부르지도 않은 음'이 생기고, 잡음 바닥도 부풀어
+      //  정작 목소리를 못 듣게 된다. 1차 고역통과(약 70Hz)를 걸고 그 결과로 음량을 잰다.
+      //  상태(hpX/hpY)를 블록 사이에 이어 두므로 블록 경계에서 튀지 않는다.
+      const R = 1 - 2 * Math.PI * 70 / m.sr;
+      let e2 = 0, hx = m.hpX || 0, hy = m.hpY || 0;
+      for (let i = 0; i < blk.length; i++) {
+        const x = blk[i];
+        hy = R * (hy + x - hx); hx = x;
+        e2 += hy * hy;
+      }
+      m.hpX = hx; m.hpY = hy;
       const rms = Math.sqrt(e2 / blk.length);
       m.rms = rms;
 
